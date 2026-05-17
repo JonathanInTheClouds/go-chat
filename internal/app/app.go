@@ -19,6 +19,17 @@ type runtimeConfig struct {
 	KnownPeersPath string
 }
 
+type trustBlockedError struct {
+	reason string
+}
+
+func (e *trustBlockedError) Error() string {
+	if e == nil || e.reason == "" {
+		return "peer trust blocked"
+	}
+	return e.reason
+}
+
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		_, err := fmt.Fprint(stdout, ui.Usage())
@@ -114,6 +125,13 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 
 		if err := reportPeerTrust(stdout, runtime, *peerLabel, conn.RemoteAddress(), peer.Fingerprint, *allowUntrusted); err != nil {
 			_ = conn.Close()
+			var blocked *trustBlockedError
+			if errors.As(err, &blocked) {
+				if _, writeErr := fmt.Fprintln(stdout, "session rejected; returning to listener"); writeErr != nil {
+					return writeErr
+				}
+				continue
+			}
 			return err
 		}
 
@@ -198,6 +216,7 @@ func runConnect(args []string, stdin io.Reader, stdout io.Writer) error {
 	defer conn.Close()
 
 	if err := reportPeerTrust(stdout, runtime, *peerLabel, session.RemoteAddress, peer.Fingerprint, *allowUntrusted); err != nil {
+		_ = conn.Close()
 		return err
 	}
 
@@ -525,8 +544,10 @@ func reportPeerTrust(stdout io.Writer, runtime runtimeConfig, peerLabel, fallbac
 	switch observation.Status {
 	case trust.StatusNew:
 		if !allowUntrusted {
-			_, err = fmt.Fprintf(stdout, ui.PeerTrustNewBlockedNotice+"\n", observation.Label, observation.Observed)
-			return err
+			if _, err := fmt.Fprintf(stdout, ui.PeerTrustNewBlockedNotice+"\n", observation.Label, observation.Observed); err != nil {
+				return err
+			}
+			return &trustBlockedError{reason: fmt.Sprintf("untrusted peer %s", observation.Label)}
 		}
 		if err := store.Set(label, fingerprint, time.Now()); err != nil {
 			return err
@@ -539,8 +560,10 @@ func reportPeerTrust(stdout io.Writer, runtime runtimeConfig, peerLabel, fallbac
 		_, err = fmt.Fprintf(stdout, ui.PeerTrustMatchNotice+"\n", observation.Label)
 	case trust.StatusMismatch:
 		if !allowUntrusted {
-			_, err = fmt.Fprintf(stdout, ui.PeerTrustMismatchBlockedNotice+"\n", observation.Label, observation.Expected, observation.Observed)
-			return err
+			if _, err := fmt.Fprintf(stdout, ui.PeerTrustMismatchBlockedNotice+"\n", observation.Label, observation.Expected, observation.Observed); err != nil {
+				return err
+			}
+			return &trustBlockedError{reason: fmt.Sprintf("peer fingerprint changed for %s", observation.Label)}
 		}
 		if err := store.Set(label, fingerprint, time.Now()); err != nil {
 			return err
