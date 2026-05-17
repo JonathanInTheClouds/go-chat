@@ -100,21 +100,39 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 		}
 	}
 
-	conn, peer, err := netpkg.ListenAndAccept(session, identity, stdout)
+	listener, err := netpkg.Listen(session, stdout)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer listener.Close()
 
-	if err := reportPeerTrust(stdout, runtime, *peerLabel, conn.RemoteAddress(), peer.Fingerprint, *allowUntrusted); err != nil {
+	for {
+		conn, peer, err := listener.Accept(identity, stdout)
+		if err != nil {
+			return err
+		}
+
+		if err := reportPeerTrust(stdout, runtime, *peerLabel, conn.RemoteAddress(), peer.Fingerprint, *allowUntrusted); err != nil {
+			_ = conn.Close()
+			return err
+		}
+
+		err = ui.RunChat(stdin, stdout, conn, peer, ui.RuntimeOptions{
+			MemoryOnly:     runtime.MemoryOnly,
+			IdentityPath:   runtime.IdentityPath,
+			KnownPeersPath: runtime.KnownPeersPath,
+		})
+		_ = conn.Close()
+
+		var closedErr *ui.SessionClosedError
+		if errors.As(err, &closedErr) {
+			if _, writeErr := fmt.Fprintln(stdout, "session closed; returning to listener"); writeErr != nil {
+				return writeErr
+			}
+			continue
+		}
 		return err
 	}
-
-	return ui.RunChat(stdin, stdout, conn, peer, ui.RuntimeOptions{
-		MemoryOnly:     runtime.MemoryOnly,
-		IdentityPath:   runtime.IdentityPath,
-		KnownPeersPath: runtime.KnownPeersPath,
-	})
 }
 
 func runConnect(args []string, stdin io.Reader, stdout io.Writer) error {
@@ -183,11 +201,16 @@ func runConnect(args []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 
-	return ui.RunChat(stdin, stdout, conn, peer, ui.RuntimeOptions{
+	err = ui.RunChat(stdin, stdout, conn, peer, ui.RuntimeOptions{
 		MemoryOnly:     runtime.MemoryOnly,
 		IdentityPath:   runtime.IdentityPath,
 		KnownPeersPath: runtime.KnownPeersPath,
 	})
+	var closedErr *ui.SessionClosedError
+	if errors.As(err, &closedErr) {
+		return nil
+	}
+	return err
 }
 
 func runGenKey(args []string, stdout io.Writer) error {

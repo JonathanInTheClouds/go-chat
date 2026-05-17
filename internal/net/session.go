@@ -25,6 +25,10 @@ type ListenerConfig struct {
 	ListenAddress string
 }
 
+type SessionListener struct {
+	listener stdnet.Listener
+}
+
 func (c ListenerConfig) Validate() error {
 	if c.ListenAddress == "" {
 		return errors.New("listen address is required")
@@ -51,6 +55,48 @@ func (c DialConfig) Validate() error {
 	}
 
 	return nil
+}
+
+func Listen(config ListenerConfig, status io.Writer) (*SessionListener, error) {
+	listener, err := stdnet.Listen("tcp", config.ListenAddress)
+	if err != nil {
+		return nil, fmt.Errorf("listen: %w", err)
+	}
+
+	if _, err := fmt.Fprintf(status, "listening on %s\n", config.ListenAddress); err != nil {
+		listener.Close()
+		return nil, err
+	}
+
+	return &SessionListener{listener: listener}, nil
+}
+
+func (l *SessionListener) Close() error {
+	return l.listener.Close()
+}
+
+func (l *SessionListener) Accept(identity *cryptopkg.Identity, status io.Writer) (*SecureSession, PeerIdentity, error) {
+	if _, err := fmt.Fprintln(status, "waiting for peer..."); err != nil {
+		return nil, PeerIdentity{}, err
+	}
+
+	conn, err := l.listener.Accept()
+	if err != nil {
+		return nil, PeerIdentity{}, fmt.Errorf("accept peer: %w", err)
+	}
+
+	session, err := establishSession(conn, identity, false)
+	if err != nil {
+		conn.Close()
+		return nil, PeerIdentity{}, err
+	}
+
+	if _, err := fmt.Fprintf(status, "peer connected from %s\n", conn.RemoteAddr().String()); err != nil {
+		session.Close()
+		return nil, PeerIdentity{}, err
+	}
+
+	return session, session.PeerIdentity(), nil
 }
 
 type PeerIdentity struct {
@@ -274,33 +320,12 @@ func (s *SecureSession) ReceiveMessage() (protocol.Message, error) {
 }
 
 func ListenAndAccept(config ListenerConfig, identity *cryptopkg.Identity, status io.Writer) (*SecureSession, PeerIdentity, error) {
-	listener, err := stdnet.Listen("tcp", config.ListenAddress)
+	listener, err := Listen(config, status)
 	if err != nil {
-		return nil, PeerIdentity{}, fmt.Errorf("listen: %w", err)
+		return nil, PeerIdentity{}, err
 	}
 	defer listener.Close()
-
-	if _, err := fmt.Fprintf(status, "listening on %s\nwaiting for peer...\n", config.ListenAddress); err != nil {
-		return nil, PeerIdentity{}, err
-	}
-
-	conn, err := listener.Accept()
-	if err != nil {
-		return nil, PeerIdentity{}, fmt.Errorf("accept peer: %w", err)
-	}
-
-	session, err := establishSession(conn, identity, false)
-	if err != nil {
-		conn.Close()
-		return nil, PeerIdentity{}, err
-	}
-
-	if _, err := fmt.Fprintf(status, "peer connected from %s\n", conn.RemoteAddr().String()); err != nil {
-		session.Close()
-		return nil, PeerIdentity{}, err
-	}
-
-	return session, session.PeerIdentity(), nil
+	return listener.Accept(identity, status)
 }
 
 func Dial(config DialConfig, identity *cryptopkg.Identity, status io.Writer) (*SecureSession, PeerIdentity, error) {

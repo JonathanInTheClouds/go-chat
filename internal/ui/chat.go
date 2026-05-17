@@ -67,6 +67,7 @@ type chatModel struct {
 	localFingerprint string
 	peerFingerprint  string
 	receiveDir       string
+	exitErr          error
 }
 
 type RuntimeOptions struct {
@@ -177,7 +178,7 @@ func RunChat(stdin io.Reader, stdout io.Writer, session *netpkg.SecureSession, p
 		return err
 	}
 
-	return nil
+	return model.exitErr
 }
 
 func readLoop(session *netpkg.SecureSession, events chan<- tea.Msg, receiveDir string, runtimeOptions RuntimeOptions) {
@@ -314,15 +315,15 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForEvent(m.events)
 	case sessionError:
 		m.disconnected = true
+		m.exitErr = &SessionClosedError{Cause: msg.err}
 		if !m.quitting {
-			m.appendBanner(fmt.Sprintf("session ended: %v", msg.err), true)
-			m.reflow()
+			return m, tea.Quit
 		}
 		return m, nil
 	case panicWipeComplete:
 		m.bestEffortClear()
 		if msg.err != nil {
-			m.appendBanner(fmt.Sprintf("panic wipe completed with cleanup errors: %v", msg.err), true)
+			m.exitErr = msg.err
 		}
 		return m, tea.Quit
 	}
@@ -569,6 +570,24 @@ func panicWipeCmd(runtimeOptions RuntimeOptions, session *netpkg.SecureSession) 
 
 		return panicWipeComplete{err: errors.Join(errs...)}
 	}
+}
+
+type SessionClosedError struct {
+	Cause error
+}
+
+func (e *SessionClosedError) Error() string {
+	if e == nil || e.Cause == nil {
+		return "chat session ended"
+	}
+	return fmt.Sprintf("chat session ended: %v", e.Cause)
+}
+
+func (e *SessionClosedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
 }
 
 func indentBlock(value, prefix string) string {
