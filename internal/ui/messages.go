@@ -3,6 +3,9 @@ package ui
 const VolatileIdentityNotice = "Keys shown here are generated in memory for this process only and are not persisted."
 const PersistentIdentityCreatedNotice = "Persistent identity created at %s."
 const PersistentIdentityLoadedNotice = "Using persistent identity at %s."
+const MemoryOnlyIdentityNotice = "Memory-only mode is using an ephemeral in-memory identity for this session."
+const MemoryOnlyModeNotice = "Memory-only mode enabled. App-managed disk persistence and file transfer are disabled for this session."
+const MemoryOnlyPeerNotice = "Memory-only mode: peer %s is trusted only for this live session. Fingerprint: %s."
 const WipeMessage = "Persistent identity removed from %s."
 const SecureSessionReady = "Secure Noise session established. Encryption: ChaCha20-Poly1305. Forward secrecy enabled."
 const PeerTrustNewNotice = "First contact for %s. Stored peer fingerprint %s."
@@ -20,8 +23,8 @@ func Usage() string {
 	return `chat: encrypted terminal chat prototype
 
 Usage:
-  chat serve [--listen host:port] [--ephemeral] [--identity path] [--known-peers path] [--peer label] [--allow-untrusted]
-  chat connect [--ephemeral] [--identity path] [--known-peers path] [--peer label] [--allow-untrusted] host:port
+  chat serve [--listen host:port] [--ephemeral] [--identity path] [--known-peers path] [--peer label] [--allow-untrusted] [--memory-only]
+  chat connect [--ephemeral] [--identity path] [--known-peers path] [--peer label] [--allow-untrusted] [--memory-only] host:port
   chat genkey [--identity path] [--force]
   chat genkey --ephemeral
   chat fingerprint [--ephemeral] [--identity path]

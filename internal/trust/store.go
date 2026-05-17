@@ -60,6 +60,13 @@ func Open(path string) (*Store, error) {
 	}, nil
 }
 
+func DeleteStore(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("delete known peers file: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) Observe(label, fingerprint string, now time.Time) (Observation, error) {
 	observation, err := s.Check(label, fingerprint)
 	if err != nil {

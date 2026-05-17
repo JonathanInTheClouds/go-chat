@@ -13,6 +13,12 @@ import (
 	"chat/internal/ui"
 )
 
+type runtimeConfig struct {
+	MemoryOnly     bool
+	IdentityPath   string
+	KnownPeersPath string
+}
+
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		_, err := fmt.Fprint(stdout, ui.Usage())
@@ -52,7 +58,13 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 	knownPeersPath := fs.String("known-peers", "", "path to known peers file")
 	peerLabel := fs.String("peer", "", "stable label for the remote peer")
 	allowUntrusted := fs.Bool("allow-untrusted", false, "allow first-contact or changed peer fingerprints and persist trust")
+	memoryOnly := fs.Bool("memory-only", false, "disable app-managed disk persistence for this session")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	runtime, err := resolveRuntimeConfig(*identityPath, *knownPeersPath, *memoryOnly)
+	if err != nil {
 		return err
 	}
 
@@ -64,12 +76,28 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 
-	identity, modeNotice, err := resolveIdentity(*identityPath, *ephemeral)
-	if err != nil {
-		return err
+	var (
+		identity   *cryptopkg.Identity
+		modeNotice string
+	)
+	if runtime.MemoryOnly {
+		identity, modeNotice, err = resolveIdentityForMemoryOnly()
+		if err != nil {
+			return err
+		}
+	} else {
+		identity, modeNotice, err = resolveIdentity(*identityPath, *ephemeral)
+		if err != nil {
+			return err
+		}
 	}
 	if _, err := fmt.Fprintln(stdout, modeNotice); err != nil {
 		return err
+	}
+	if runtime.MemoryOnly {
+		if _, err := fmt.Fprintln(stdout, ui.MemoryOnlyModeNotice); err != nil {
+			return err
+		}
 	}
 
 	conn, peer, err := netpkg.ListenAndAccept(session, identity, stdout)
@@ -78,11 +106,15 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 	}
 	defer conn.Close()
 
-	if err := reportPeerTrust(stdout, *knownPeersPath, *peerLabel, conn.RemoteAddress(), peer.Fingerprint, *allowUntrusted); err != nil {
+	if err := reportPeerTrust(stdout, runtime, *peerLabel, conn.RemoteAddress(), peer.Fingerprint, *allowUntrusted); err != nil {
 		return err
 	}
 
-	return ui.RunChat(stdin, stdout, conn, peer)
+	return ui.RunChat(stdin, stdout, conn, peer, ui.RuntimeOptions{
+		MemoryOnly:     runtime.MemoryOnly,
+		IdentityPath:   runtime.IdentityPath,
+		KnownPeersPath: runtime.KnownPeersPath,
+	})
 }
 
 func runConnect(args []string, stdin io.Reader, stdout io.Writer) error {
@@ -94,8 +126,14 @@ func runConnect(args []string, stdin io.Reader, stdout io.Writer) error {
 	knownPeersPath := fs.String("known-peers", "", "path to known peers file")
 	peerLabel := fs.String("peer", "", "stable label for the remote peer")
 	allowUntrusted := fs.Bool("allow-untrusted", false, "allow first-contact or changed peer fingerprints and persist trust")
+	memoryOnly := fs.Bool("memory-only", false, "disable app-managed disk persistence for this session")
 
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	runtime, err := resolveRuntimeConfig(*identityPath, *knownPeersPath, *memoryOnly)
+	if err != nil {
 		return err
 	}
 
@@ -111,12 +149,28 @@ func runConnect(args []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 
-	identity, modeNotice, err := resolveIdentity(*identityPath, *ephemeral)
-	if err != nil {
-		return err
+	var (
+		identity   *cryptopkg.Identity
+		modeNotice string
+	)
+	if runtime.MemoryOnly {
+		identity, modeNotice, err = resolveIdentityForMemoryOnly()
+		if err != nil {
+			return err
+		}
+	} else {
+		identity, modeNotice, err = resolveIdentity(*identityPath, *ephemeral)
+		if err != nil {
+			return err
+		}
 	}
 	if _, err := fmt.Fprintln(stdout, modeNotice); err != nil {
 		return err
+	}
+	if runtime.MemoryOnly {
+		if _, err := fmt.Fprintln(stdout, ui.MemoryOnlyModeNotice); err != nil {
+			return err
+		}
 	}
 
 	conn, peer, err := netpkg.Dial(session, identity, stdout)
@@ -125,11 +179,15 @@ func runConnect(args []string, stdin io.Reader, stdout io.Writer) error {
 	}
 	defer conn.Close()
 
-	if err := reportPeerTrust(stdout, *knownPeersPath, *peerLabel, session.RemoteAddress, peer.Fingerprint, *allowUntrusted); err != nil {
+	if err := reportPeerTrust(stdout, runtime, *peerLabel, session.RemoteAddress, peer.Fingerprint, *allowUntrusted); err != nil {
 		return err
 	}
 
-	return ui.RunChat(stdin, stdout, conn, peer)
+	return ui.RunChat(stdin, stdout, conn, peer, ui.RuntimeOptions{
+		MemoryOnly:     runtime.MemoryOnly,
+		IdentityPath:   runtime.IdentityPath,
+		KnownPeersPath: runtime.KnownPeersPath,
+	})
 }
 
 func runGenKey(args []string, stdout io.Writer) error {
@@ -256,7 +314,12 @@ func runTrustList(args []string, stdout io.Writer) error {
 		return err
 	}
 
-	store, err := openTrustStore(*knownPeersPath)
+	path, err := effectiveKnownPeersPath(*knownPeersPath)
+	if err != nil {
+		return err
+	}
+
+	store, err := openTrustStore(path)
 	if err != nil {
 		return err
 	}
@@ -295,7 +358,12 @@ func runTrustSet(args []string, stdout io.Writer) error {
 		return errors.New("trust set requires exactly two arguments: <label> <fingerprint>")
 	}
 
-	store, err := openTrustStore(*knownPeersPath)
+	path, err := effectiveKnownPeersPath(*knownPeersPath)
+	if err != nil {
+		return err
+	}
+
+	store, err := openTrustStore(path)
 	if err != nil {
 		return err
 	}
@@ -322,7 +390,12 @@ func runTrustRemove(args []string, stdout io.Writer) error {
 		return errors.New("trust remove requires exactly one argument: <label>")
 	}
 
-	store, err := openTrustStore(*knownPeersPath)
+	path, err := effectiveKnownPeersPath(*knownPeersPath)
+	if err != nil {
+		return err
+	}
+
+	store, err := openTrustStore(path)
 	if err != nil {
 		return err
 	}
@@ -365,6 +438,14 @@ func resolveIdentity(identityPath string, ephemeral bool) (*cryptopkg.Identity, 
 	return identity, fmt.Sprintf(ui.PersistentIdentityLoadedNotice, path), nil
 }
 
+func resolveIdentityForMemoryOnly() (*cryptopkg.Identity, string, error) {
+	identity, err := cryptopkg.GenerateIdentity()
+	if err != nil {
+		return nil, "", err
+	}
+	return identity, ui.MemoryOnlyIdentityNotice, nil
+}
+
 func effectiveIdentityPath(identityPath string) (string, error) {
 	if identityPath != "" {
 		return identityPath, nil
@@ -379,24 +460,39 @@ func effectiveKnownPeersPath(knownPeersPath string) (string, error) {
 	return trust.DefaultPath()
 }
 
-func openTrustStore(knownPeersPath string) (*trust.Store, error) {
-	path, err := effectiveKnownPeersPath(knownPeersPath)
+func resolveRuntimeConfig(identityPath, knownPeersPath string, memoryOnly bool) (runtimeConfig, error) {
+	effectiveIdentity, err := effectiveIdentityPath(identityPath)
 	if err != nil {
-		return nil, err
+		return runtimeConfig{}, err
 	}
+	effectiveKnownPeers, err := effectiveKnownPeersPath(knownPeersPath)
+	if err != nil {
+		return runtimeConfig{}, err
+	}
+
+	return runtimeConfig{
+		MemoryOnly:     memoryOnly,
+		IdentityPath:   effectiveIdentity,
+		KnownPeersPath: effectiveKnownPeers,
+	}, nil
+}
+
+func openTrustStore(path string) (*trust.Store, error) {
 	return trust.Open(path)
 }
 
-func reportPeerTrust(stdout io.Writer, knownPeersPath, peerLabel, fallbackLabel, fingerprint string, allowUntrusted bool) error {
-	store, err := openTrustStore(knownPeersPath)
+func reportPeerTrust(stdout io.Writer, runtime runtimeConfig, peerLabel, fallbackLabel, fingerprint string, allowUntrusted bool) error {
+	if runtime.MemoryOnly {
+		_, err := fmt.Fprintf(stdout, ui.MemoryOnlyPeerNotice+"\n", choosePeerLabel(peerLabel, fallbackLabel), fingerprint)
+		return err
+	}
+
+	store, err := openTrustStore(runtime.KnownPeersPath)
 	if err != nil {
 		return err
 	}
 
-	label := peerLabel
-	if label == "" {
-		label = fallbackLabel
-	}
+	label := choosePeerLabel(peerLabel, fallbackLabel)
 
 	observation, err := store.Check(label, fingerprint)
 	if err != nil {
@@ -432,4 +528,11 @@ func reportPeerTrust(stdout io.Writer, knownPeersPath, peerLabel, fallbackLabel,
 	}
 
 	return err
+}
+
+func choosePeerLabel(peerLabel, fallbackLabel string) string {
+	if peerLabel != "" {
+		return peerLabel
+	}
+	return fallbackLabel
 }

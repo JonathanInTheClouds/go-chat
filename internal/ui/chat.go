@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -8,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	cryptopkg "chat/internal/crypto"
 	netpkg "chat/internal/net"
 	"chat/internal/protocol"
+	"chat/internal/trust"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -31,6 +34,10 @@ type sessionError struct {
 	err error
 }
 
+type panicWipeComplete struct {
+	err error
+}
+
 type chatLine struct {
 	timestamp time.Time
 	speaker   string
@@ -44,6 +51,7 @@ type banner struct {
 }
 
 type chatModel struct {
+	runtimeOptions   RuntimeOptions
 	session          *netpkg.SecureSession
 	peer             netpkg.PeerIdentity
 	input            textinput.Model
@@ -54,10 +62,17 @@ type chatModel struct {
 	width            int
 	height           int
 	quitting         bool
+	disconnected     bool
 	remoteAddress    string
 	localFingerprint string
 	peerFingerprint  string
 	receiveDir       string
+}
+
+type RuntimeOptions struct {
+	MemoryOnly     bool
+	IdentityPath   string
+	KnownPeersPath string
 }
 
 var (
@@ -118,7 +133,7 @@ var (
 			Padding(0, 1)
 )
 
-func RunChat(stdin io.Reader, stdout io.Writer, session *netpkg.SecureSession, peer netpkg.PeerIdentity) error {
+func RunChat(stdin io.Reader, stdout io.Writer, session *netpkg.SecureSession, peer netpkg.PeerIdentity, runtimeOptions RuntimeOptions) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -136,6 +151,7 @@ func RunChat(stdin io.Reader, stdout io.Writer, session *netpkg.SecureSession, p
 
 	events := make(chan tea.Msg, 16)
 	model := &chatModel{
+		runtimeOptions:   runtimeOptions,
 		session:          session,
 		peer:             peer,
 		input:            ti,
@@ -145,13 +161,10 @@ func RunChat(stdin io.Reader, stdout io.Writer, session *netpkg.SecureSession, p
 		localFingerprint: session.LocalFingerprint(),
 		peerFingerprint:  peer.Fingerprint,
 		receiveDir:       filepath.Join(cwd, "received"),
-		banners: []banner{
-			{body: SecureSessionReady},
-			{body: "Use /send <path> to transfer a file. Use PgUp/PgDn or arrow keys to scroll. Press Esc, Ctrl+C, or /quit to exit."},
-		},
+		banners:          initialBanners(runtimeOptions),
 	}
 
-	go readLoop(session, events, model.receiveDir)
+	go readLoop(session, events, model.receiveDir, runtimeOptions)
 
 	program := tea.NewProgram(
 		model,
@@ -167,7 +180,7 @@ func RunChat(stdin io.Reader, stdout io.Writer, session *netpkg.SecureSession, p
 	return nil
 }
 
-func readLoop(session *netpkg.SecureSession, events chan<- tea.Msg, receiveDir string) {
+func readLoop(session *netpkg.SecureSession, events chan<- tea.Msg, receiveDir string, runtimeOptions RuntimeOptions) {
 	for {
 		message, err := session.ReceiveMessage()
 		if err != nil {
@@ -179,6 +192,11 @@ func readLoop(session *netpkg.SecureSession, events chan<- tea.Msg, receiveDir s
 		case protocol.MessageTypeChat:
 			events <- incomingMessage{body: message.Text}
 		case protocol.MessageTypeFileStart:
+			if runtimeOptions.MemoryOnly {
+				_ = session.Close()
+				events <- sessionError{err: errors.New("peer attempted file transfer while memory-only mode is active")}
+				return
+			}
 			path, size, err := session.SaveIncomingFile(message.FileID, message.Name, message.Size, receiveDir)
 			if err != nil {
 				events <- sessionError{err: err}
@@ -215,6 +233,9 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			_ = m.session.Close()
 			return m, tea.Quit
+		case tea.KeyCtrlW:
+			m.quitting = true
+			return m, panicWipeCmd(m.runtimeOptions, m.session)
 		case tea.KeyEnter:
 			body := strings.TrimSpace(m.input.Value())
 			if body == "" {
@@ -225,7 +246,17 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_ = m.session.Close()
 				return m, tea.Quit
 			}
+			if m.disconnected {
+				m.appendBanner("session is closed; panic wipe or restart a new session", true)
+				m.reflow()
+				return m, nil
+			}
 			if strings.HasPrefix(body, "/send ") {
+				if m.runtimeOptions.MemoryOnly {
+					m.appendBanner("file transfer is disabled in memory-only mode", true)
+					m.reflow()
+					return m, nil
+				}
 				path := strings.TrimSpace(strings.TrimPrefix(body, "/send "))
 				if path == "" {
 					m.appendBanner("usage: /send <path-to-file>", true)
@@ -282,11 +313,18 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reflow()
 		return m, waitForEvent(m.events)
 	case sessionError:
+		m.disconnected = true
 		if !m.quitting {
 			m.appendBanner(fmt.Sprintf("session ended: %v", msg.err), true)
 			m.reflow()
 		}
 		return m, nil
+	case panicWipeComplete:
+		m.bestEffortClear()
+		if msg.err != nil {
+			m.appendBanner(fmt.Sprintf("panic wipe completed with cleanup errors: %v", msg.err), true)
+		}
+		return m, tea.Quit
 	}
 
 	var cmds []tea.Cmd
@@ -328,7 +366,8 @@ func (m *chatModel) renderHeader(width int) string {
 	title := headerTitleStyle.Render("Encrypted Terminal Chat")
 	meta := headerMetaStyle.Render(
 		fmt.Sprintf(
-			"remote %s\nlocal %s\npeer  %s",
+			"mode  %s\nremote %s\nlocal %s\npeer  %s",
+			m.modeLabel(),
 			m.remoteAddress,
 			m.localFingerprint,
 			m.peerFingerprint,
@@ -377,11 +416,12 @@ func (m *chatModel) renderStatusBar(width int) string {
 	}
 
 	status := fmt.Sprintf(
-		"%s  %s  lines:%d  scroll:%s",
+		"%s  %s  lines:%d  scroll:%s  state:%s",
 		m.remoteAddress,
-		"PgUp/PgDn scroll",
+		m.scrollHint(),
 		len(m.lines),
 		scrollState,
+		m.connectionState(),
 	)
 
 	return statusBarStyle.Width(width).Render(status)
@@ -463,6 +503,71 @@ func (m *chatModel) appendBanner(body string, isError bool) {
 	})
 	if len(m.banners) > 8 {
 		m.banners = m.banners[len(m.banners)-8:]
+	}
+}
+
+func (m *chatModel) modeLabel() string {
+	if m.runtimeOptions.MemoryOnly {
+		return "memory-only"
+	}
+	return "persistent"
+}
+
+func (m *chatModel) scrollHint() string {
+	return "PgUp/PgDn scroll"
+}
+
+func (m *chatModel) connectionState() string {
+	if m.disconnected {
+		return "closed"
+	}
+	return "live"
+}
+
+func (m *chatModel) bestEffortClear() {
+	for idx := range m.lines {
+		m.lines[idx].body = ""
+		m.lines[idx].speaker = ""
+	}
+	m.lines = nil
+	for idx := range m.banners {
+		m.banners[idx].body = ""
+	}
+	m.banners = nil
+	m.input.SetValue("")
+	m.remoteAddress = ""
+	m.localFingerprint = ""
+	m.peerFingerprint = ""
+}
+
+func initialBanners(runtimeOptions RuntimeOptions) []banner {
+	banners := []banner{{body: SecureSessionReady}}
+	if runtimeOptions.MemoryOnly {
+		banners = append(banners, banner{body: "Memory-only mode is active. File transfer is disabled. Press Ctrl+W for panic wipe."})
+	} else {
+		banners = append(banners, banner{body: "Use /send <path> to transfer a file. Press Ctrl+W for panic wipe."})
+	}
+	banners = append(banners, banner{body: "Use PgUp/PgDn or arrow keys to scroll. Press Esc, Ctrl+C, or /quit to exit."})
+	return banners
+}
+
+func panicWipeCmd(runtimeOptions RuntimeOptions, session *netpkg.SecureSession) tea.Cmd {
+	return func() tea.Msg {
+		_ = session.Close()
+
+		var errs []error
+		if runtimeOptions.IdentityPath != "" {
+			if err := cryptopkg.DeleteIdentity(runtimeOptions.IdentityPath); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if runtimeOptions.KnownPeersPath != "" {
+			if err := trust.DeleteStore(runtimeOptions.KnownPeersPath); err != nil {
+				errs = append(errs, err)
+			}
+		}
+
+		return panicWipeComplete{err: errors.Join(errs...)}
 	}
 }
 
