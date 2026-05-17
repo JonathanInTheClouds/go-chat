@@ -22,3 +22,6 @@ known_peers.json
 
 # macOS
 .DS_Store
+
+# Claude Code
+.claude/
