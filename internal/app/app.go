@@ -9,6 +9,7 @@ import (
 
 	cryptopkg "chat/internal/crypto"
 	netpkg "chat/internal/net"
+	"chat/internal/protocol"
 	"chat/internal/trust"
 	"chat/internal/ui"
 )
@@ -123,10 +124,10 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 
-		if err := reportPeerTrust(stdout, runtime, *peerLabel, conn.RemoteAddress(), peer.Fingerprint, *allowUntrusted); err != nil {
+		trustErr := reportPeerTrust(stdout, runtime, *peerLabel, conn.RemoteAddress(), peer.Fingerprint, *allowUntrusted)
+		if err := coordinateSessionAdmission(conn, false, trustErr); err != nil {
 			_ = conn.Close()
-			var blocked *trustBlockedError
-			if errors.As(err, &blocked) {
+			if isSessionRejected(err) {
 				if _, writeErr := fmt.Fprintln(stdout, "session rejected; returning to listener"); writeErr != nil {
 					return writeErr
 				}
@@ -215,7 +216,8 @@ func runConnect(args []string, stdin io.Reader, stdout io.Writer) error {
 	}
 	defer conn.Close()
 
-	if err := reportPeerTrust(stdout, runtime, *peerLabel, session.RemoteAddress, peer.Fingerprint, *allowUntrusted); err != nil {
+	trustErr := reportPeerTrust(stdout, runtime, *peerLabel, session.RemoteAddress, peer.Fingerprint, *allowUntrusted)
+	if err := coordinateSessionAdmission(conn, true, trustErr); err != nil {
 		_ = conn.Close()
 		return err
 	}
@@ -581,4 +583,73 @@ func choosePeerLabel(peerLabel, fallbackLabel string) string {
 		return peerLabel
 	}
 	return fallbackLabel
+}
+
+type remoteSessionRejectedError struct {
+	reason string
+}
+
+func (e *remoteSessionRejectedError) Error() string {
+	if e == nil || e.reason == "" {
+		return "remote peer rejected the session"
+	}
+	return fmt.Sprintf("remote peer rejected the session: %s", e.reason)
+}
+
+func coordinateSessionAdmission(session *netpkg.SecureSession, initiator bool, localErr error) error {
+	if initiator {
+		if err := sendAdmissionDecision(session, localErr); err != nil {
+			return err
+		}
+		peerMessage, err := session.ReceiveMessage()
+		if err != nil {
+			if localErr != nil {
+				return localErr
+			}
+			return err
+		}
+		return evaluateAdmissionOutcome(localErr, peerMessage)
+	}
+
+	peerMessage, err := session.ReceiveMessage()
+	if err != nil {
+		return err
+	}
+	if err := sendAdmissionDecision(session, localErr); err != nil {
+		return err
+	}
+	return evaluateAdmissionOutcome(localErr, peerMessage)
+}
+
+func sendAdmissionDecision(session *netpkg.SecureSession, localErr error) error {
+	if localErr != nil {
+		return session.SendSessionReject(localErr.Error())
+	}
+	return session.SendSessionAccept()
+}
+
+func evaluateAdmissionOutcome(localErr error, peerMessage protocol.Message) error {
+	switch peerMessage.Type {
+	case protocol.MessageTypeSessionAccept:
+		if localErr != nil {
+			return localErr
+		}
+		return nil
+	case protocol.MessageTypeSessionReject:
+		if localErr != nil {
+			return localErr
+		}
+		return &remoteSessionRejectedError{reason: peerMessage.Text}
+	default:
+		return fmt.Errorf("unexpected session admission message type %q", peerMessage.Type)
+	}
+}
+
+func isSessionRejected(err error) bool {
+	var localBlocked *trustBlockedError
+	if errors.As(err, &localBlocked) {
+		return true
+	}
+	var remoteBlocked *remoteSessionRejectedError
+	return errors.As(err, &remoteBlocked)
 }

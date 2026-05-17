@@ -140,6 +140,19 @@ func (s *SecureSession) SendChat(message string) error {
 	})
 }
 
+func (s *SecureSession) SendSessionAccept() error {
+	return s.sendProtocolMessage(protocol.Message{
+		Type: protocol.MessageTypeSessionAccept,
+	})
+}
+
+func (s *SecureSession) SendSessionReject(reason string) error {
+	return s.sendProtocolMessage(protocol.Message{
+		Type: protocol.MessageTypeSessionReject,
+		Text: reason,
+	})
+}
+
 func (s *SecureSession) SendFile(path string) (string, string, int64, error) {
 	info, err := os.Stat(path)
 	if err != nil {

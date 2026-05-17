@@ -9,10 +9,12 @@ import (
 const FileChunkSize = 32 * 1024
 
 const (
-	MessageTypeChat         = "chat"
-	MessageTypeFileStart    = "file_start"
-	MessageTypeFileChunk    = "file_chunk"
-	MessageTypeFileComplete = "file_complete"
+	MessageTypeChat          = "chat"
+	MessageTypeFileStart     = "file_start"
+	MessageTypeFileChunk     = "file_chunk"
+	MessageTypeFileComplete  = "file_complete"
+	MessageTypeSessionAccept = "session_accept"
+	MessageTypeSessionReject = "session_reject"
 )
 
 type Message struct {
@@ -65,6 +67,11 @@ func ValidateMessage(message Message) error {
 	case MessageTypeFileComplete:
 		if message.FileID == "" {
 			return errors.New("file complete requires file id")
+		}
+	case MessageTypeSessionAccept:
+	case MessageTypeSessionReject:
+		if message.Text == "" {
+			return errors.New("session reject requires reason text")
 		}
 	default:
 		return fmt.Errorf("unknown protocol message type %q", message.Type)
