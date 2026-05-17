@@ -1,0 +1,24 @@
+# Binaries and build outputs
+/chat
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+bin/
+dist/
+
+# Go tool artifacts
+coverage.out
+
+# Local runtime state
+received/
+
+# Local identity and trust data
+identity.json
+known_peers.json
+
+# macOS
+.DS_Store
