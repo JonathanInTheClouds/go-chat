@@ -6,16 +6,18 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"time"
 
-	cryptopkg "chat/internal/crypto"
-	netpkg "chat/internal/net"
-	"chat/internal/protocol"
-	tunnelpkg "chat/internal/tunnel"
-	"chat/internal/trust"
-	"chat/internal/ui"
+	cryptopkg "github.com/JonathanInTheClouds/go-chat/internal/crypto"
+	netpkg "github.com/JonathanInTheClouds/go-chat/internal/net"
+	"github.com/JonathanInTheClouds/go-chat/internal/protocol"
+	tunnelpkg "github.com/JonathanInTheClouds/go-chat/internal/tunnel"
+	"github.com/JonathanInTheClouds/go-chat/internal/trust"
+	"github.com/JonathanInTheClouds/go-chat/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -256,37 +258,61 @@ func newTrustRemoveCmd(stdout io.Writer) *cobra.Command {
 }
 
 func newCompletionCmd(root *cobra.Command, stdout io.Writer) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "completion [bash|zsh|fish]",
+	return &cobra.Command{
+		Use:   "completion [bash|zsh|fish|powershell]",
 		Short: "Generate shell completion script",
 		Long: `Generate a shell completion script and source it to enable tab completion.
+Shell is auto-detected from $SHELL (or $PSModulePath on Windows) when omitted.
 
 Bash:
-  chat completion bash > ~/.bash_completion.d/chat
-  source ~/.bash_completion.d/chat
+  eval "$(chat completion bash)"
 
 Zsh:
-  chat completion zsh > ~/.zsh/completions/_chat
+  eval "$(chat completion zsh)"
 
 Fish:
-  chat completion fish > ~/.config/fish/completions/chat.fish`,
-		Args:      cobra.ExactArgs(1),
-		ValidArgs: []string{"bash", "zsh", "fish"},
+  chat completion fish | source
+
+PowerShell (add to $PROFILE):
+  Invoke-Expression (& chat completion powershell)`,
+		Args:      cobra.MaximumNArgs(1),
+		ValidArgs: []string{"bash", "zsh", "fish", "powershell"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			switch args[0] {
+			shell := ""
+			if len(args) > 0 {
+				shell = args[0]
+			} else {
+				shell = detectShell()
+			}
+			switch shell {
 			case "bash":
 				return root.GenBashCompletion(stdout)
 			case "zsh":
 				return root.GenZshCompletion(stdout)
 			case "fish":
 				return root.GenFishCompletion(stdout, true)
+			case "powershell", "pwsh":
+				return root.GenPowerShellCompletionWithDesc(stdout)
+			case "":
+				return fmt.Errorf("could not detect shell; specify one: bash, zsh, fish, powershell")
 			default:
-				return fmt.Errorf("unsupported shell %q — use bash, zsh, or fish", args[0])
+				return fmt.Errorf("unsupported shell %q — use bash, zsh, fish, or powershell", shell)
 			}
 		},
 	}
+}
 
-	return cmd
+func detectShell() string {
+	if s := os.Getenv("SHELL"); s != "" {
+		switch filepath.Base(s) {
+		case "bash", "zsh", "fish":
+			return filepath.Base(s)
+		}
+	}
+	if os.Getenv("PSModulePath") != "" {
+		return "powershell"
+	}
+	return ""
 }
 
 // --- command implementations ---

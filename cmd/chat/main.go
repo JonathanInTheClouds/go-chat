@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"chat/internal/app"
+	"github.com/JonathanInTheClouds/go-chat/internal/app"
 )
 
 func main() {
