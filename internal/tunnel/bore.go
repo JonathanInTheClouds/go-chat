@@ -1,8 +1,8 @@
 package tunnel
 
 import (
+	"bufio"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,46 +10,51 @@ import (
 	"time"
 )
 
-const (
-	boreServer = "bore.pub:7835"
-)
+const boreServer = "bore.pub:7835"
+
+// boreConn wraps a TCP connection with the null-delimited JSON framing
+// that bore uses (each message is a JSON string terminated by a null byte).
+type boreConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func dial() (*boreConn, error) {
+	c, err := net.DialTimeout("tcp", boreServer, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return &boreConn{Conn: c, r: bufio.NewReader(c)}, nil
+}
+
+func (c *boreConn) send(v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = c.Conn.Write(append(data, 0)) // null-delimited
+	return err
+}
+
+func (c *boreConn) recvServerMsg() (serverMsg, error) {
+	// read until null byte delimiter
+	data, err := c.r.ReadBytes(0)
+	if err != nil {
+		return serverMsg{}, err
+	}
+	return decodeServerMsg(data[:len(data)-1])
+}
 
 type serverMsg struct {
 	Hello      *uint16
 	Connection *string
 	Error      *string
+	Challenge  *string
 	Heartbeat  bool
 }
 
-func sendMsg(conn net.Conn, v any) error {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	var lenBuf [8]byte
-	binary.LittleEndian.PutUint64(lenBuf[:], uint64(len(data)))
-	if _, err := conn.Write(lenBuf[:]); err != nil {
-		return err
-	}
-	_, err = conn.Write(data)
-	return err
-}
-
-func recvServerMsg(conn net.Conn) (serverMsg, error) {
-	var lenBuf [8]byte
-	if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
-		return serverMsg{}, err
-	}
-	size := binary.LittleEndian.Uint64(lenBuf[:])
-	if size > 64*1024 {
-		return serverMsg{}, fmt.Errorf("message too large: %d bytes", size)
-	}
-	data := make([]byte, size)
-	if _, err := io.ReadFull(conn, data); err != nil {
-		return serverMsg{}, err
-	}
-
-	// unit variant serializes as a plain JSON string e.g. "Heartbeat"
+func decodeServerMsg(data []byte) (serverMsg, error) {
+	// unit variant serializes as a plain JSON string: "Heartbeat"
 	var s string
 	if json.Unmarshal(data, &s) == nil {
 		if s == "Heartbeat" {
@@ -58,7 +63,7 @@ func recvServerMsg(conn net.Conn) (serverMsg, error) {
 		return serverMsg{}, fmt.Errorf("unknown string message: %q", s)
 	}
 
-	// tuple variants serialize as {"Hello":port}, {"Connection":"uuid"}, {"Error":"msg"}
+	// tuple variants serialize as {"Hello":port}, {"Connection":"uuid"}, etc.
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(data, &obj); err != nil {
 		return serverMsg{}, fmt.Errorf("decode server message: %w", err)
@@ -83,6 +88,12 @@ func recvServerMsg(conn net.Conn) (serverMsg, error) {
 			return serverMsg{}, err
 		}
 		msg.Error = &errMsg
+	} else if raw, ok := obj["Challenge"]; ok {
+		var uuid string
+		if err := json.Unmarshal(raw, &uuid); err != nil {
+			return serverMsg{}, err
+		}
+		msg.Challenge = &uuid
 	} else {
 		return serverMsg{}, fmt.Errorf("unknown message: %s", data)
 	}
@@ -93,46 +104,48 @@ func recvServerMsg(conn net.Conn) (serverMsg, error) {
 // Start opens a tunnel on bore.pub for localPort and returns the public
 // address (e.g. "bore.pub:49152"). The tunnel runs until ctx is cancelled.
 func Start(ctx context.Context, localPort int) (string, error) {
-	controlConn, err := net.DialTimeout("tcp", boreServer, 10*time.Second)
+	c, err := dial()
 	if err != nil {
 		return "", fmt.Errorf("connect to bore.pub: %w", err)
 	}
 
-	if err := sendMsg(controlConn, map[string]any{"Hello": 0}); err != nil {
-		controlConn.Close()
+	if err := c.send(map[string]any{"Hello": 0}); err != nil {
+		c.Close()
 		return "", fmt.Errorf("send hello: %w", err)
 	}
 
-	msg, err := recvServerMsg(controlConn)
+	msg, err := c.recvServerMsg()
 	if err != nil {
-		controlConn.Close()
+		c.Close()
 		return "", fmt.Errorf("receive hello: %w", err)
 	}
+	if msg.Challenge != nil {
+		c.Close()
+		return "", fmt.Errorf("bore.pub requires authentication")
+	}
 	if msg.Error != nil {
-		controlConn.Close()
-		return "", fmt.Errorf("bore.pub error: %s", *msg.Error)
+		c.Close()
+		return "", fmt.Errorf("bore.pub: %s", *msg.Error)
 	}
 	if msg.Hello == nil {
-		controlConn.Close()
+		c.Close()
 		return "", fmt.Errorf("expected hello response from bore.pub")
 	}
 
 	publicAddr := fmt.Sprintf("bore.pub:%d", *msg.Hello)
-
-	go runControlLoop(ctx, controlConn, localPort)
-
+	go runControlLoop(ctx, c, localPort)
 	return publicAddr, nil
 }
 
-func runControlLoop(ctx context.Context, controlConn net.Conn, localPort int) {
-	defer controlConn.Close()
+func runControlLoop(ctx context.Context, c *boreConn, localPort int) {
+	defer c.Close()
 
 	msgCh := make(chan serverMsg, 8)
 	errCh := make(chan error, 1)
 
 	go func() {
 		for {
-			msg, err := recvServerMsg(controlConn)
+			msg, err := c.recvServerMsg()
 			if err != nil {
 				errCh <- err
 				return
@@ -149,10 +162,6 @@ func runControlLoop(ctx context.Context, controlConn net.Conn, localPort int) {
 			return
 		case msg := <-msgCh:
 			if msg.Heartbeat {
-				// respond to keep the control connection alive
-				if err := sendMsg(controlConn, "Heartbeat"); err != nil {
-					return
-				}
 				continue
 			}
 			if msg.Connection != nil {
@@ -163,23 +172,30 @@ func runControlLoop(ctx context.Context, controlConn net.Conn, localPort int) {
 }
 
 func forwardConnection(uuid string, localPort int) {
-	relayConn, err := net.DialTimeout("tcp", boreServer, 10*time.Second)
+	c, err := dial()
 	if err != nil {
 		return
 	}
 
-	if err := sendMsg(relayConn, map[string]any{"Accept": uuid}); err != nil {
-		relayConn.Close()
+	if err := c.send(map[string]any{"Accept": uuid}); err != nil {
+		c.Close()
 		return
 	}
 
 	localConn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", localPort), 5*time.Second)
 	if err != nil {
-		relayConn.Close()
+		c.Close()
 		return
 	}
 
-	pipe(relayConn, localConn)
+	// flush any bytes already buffered in the reader before raw piping
+	if n := c.r.Buffered(); n > 0 {
+		buf := make([]byte, n)
+		c.r.Read(buf)
+		localConn.Write(buf)
+	}
+
+	pipe(c.Conn, localConn)
 }
 
 func pipe(a, b net.Conn) {

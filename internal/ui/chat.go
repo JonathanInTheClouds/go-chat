@@ -570,7 +570,7 @@ func (m *chatModel) modeLabel() string {
 	if m.runtimeOptions.MemoryOnly {
 		return "memory-only"
 	}
-	return "persistent"
+	return "normal"
 }
 
 func (m *chatModel) scrollHint() string {
