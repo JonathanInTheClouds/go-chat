@@ -16,34 +16,21 @@ A terminal-native encrypted 1:1 chat tool written in Go.
 
 ## Installation
 
-### Option 1 — Download a binary (recommended)
+### Option 1 — Install script (recommended)
 
-Download the latest release for your platform from the [releases page](https://github.com/JonathanInTheClouds/go-chat/releases), extract it, and move `chat` onto your `$PATH`:
+Auto-detects your OS and architecture, downloads the right binary, and puts it on your PATH.
 
-**macOS (Apple Silicon):**
+**macOS / Linux:**
 ```bash
-curl -L https://github.com/JonathanInTheClouds/go-chat/releases/latest/download/chat_latest_darwin_arm64.tar.gz | tar xz
-sudo mv chat /usr/local/bin/
-```
-
-**macOS (Intel):**
-```bash
-curl -L https://github.com/JonathanInTheClouds/go-chat/releases/latest/download/chat_latest_darwin_amd64.tar.gz | tar xz
-sudo mv chat /usr/local/bin/
-```
-
-**Linux (amd64):**
-```bash
-curl -L https://github.com/JonathanInTheClouds/go-chat/releases/latest/download/chat_latest_linux_amd64.tar.gz | tar xz
-sudo mv chat /usr/local/bin/
+curl -fsSL https://raw.githubusercontent.com/JonathanInTheClouds/go-chat/main/install.sh | sh
 ```
 
 **Windows (PowerShell):**
 ```powershell
-Invoke-WebRequest -Uri https://github.com/JonathanInTheClouds/go-chat/releases/latest/download/chat_latest_windows_amd64.zip -OutFile chat.zip
-Expand-Archive chat.zip -DestinationPath .
-Move-Item chat.exe $env:USERPROFILE\AppData\Local\Microsoft\WindowsApps\
+irm https://raw.githubusercontent.com/JonathanInTheClouds/go-chat/main/install.ps1 | iex
 ```
+
+Or grab a binary directly from the [releases page](https://github.com/JonathanInTheClouds/go-chat/releases).
 
 ### Option 2 — go install
 
