@@ -7,10 +7,13 @@ A terminal-native encrypted 1:1 chat tool written in Go.
 - **End-to-end encryption** via [Noise XX](https://noiseprotocol.org/) handshake (ChaCha20-Poly1305, forward secrecy)
 - **Mutual authentication** — each peer proves ownership of their identity keys before the session opens
 - **Trust-on-first-use (TOFU)** with persistent known-peers store and fingerprint pinning
+- **Fingerprint confirmation prompt** — verify peer identity out-of-band before connecting
+- **Passphrase-protected identity** — keys at rest are encrypted with argon2id + AES-256-GCM
 - **Explicit session admission** — both sides must accept before entering the chat UI
 - **Encrypted file transfer** in-band over the established session
 - **Memory-only mode** — ephemeral identity, no disk state, no file transfer
-- **Panic wipe** (`Ctrl+W`) — destroys identity and trust files and exits immediately
+- **Panic wipe** (`Ctrl+W`) — destroys identity, trust files, and received directory and exits immediately
+- **Per-IP rate limiting** on the server to block reconnect spam
 - **Terminal UI** powered by [Bubble Tea](https://github.com/charmbracelet/bubbletea)
 - **Tab completion** for shell commands and in-chat file paths
 
@@ -172,11 +175,13 @@ chat completion [bash|zsh|fish|powershell]
 | `--peer label` | `-p` | Label for the remote peer in the trust store |
 | `--allow-untrusted` | `-u` | Accept first contact or a changed peer fingerprint and persist trust |
 | `--memory-only` | `-m` | Ephemeral identity, no disk state, no file transfer |
+| `--no-passphrase` | | Skip passphrase protection for the identity file |
 | `--listen host:port` | | Address to listen on, serve only (default `0.0.0.0:7777`) |
 | `--tunnel` | | Expose the server via a bore.pub tunnel (serve only) |
 | `--ephemeral` | | Throwaway in-memory identity for `genkey` / `fingerprint` |
 | `--force` | | Overwrite an existing persistent identity when running `genkey` |
 | `--peers` | | Also delete the trust store when running `wipe` |
+| `--received` | | Also securely wipe the `received/` directory when running `wipe` |
 
 ### Advanced flags
 
@@ -230,11 +235,13 @@ If a peer's fingerprint changes (key rotation, new device), the connection is bl
 ## Wiping State
 
 ```bash
-chat wipe              # delete identity only
-chat wipe --peers      # delete identity + trust store (full reset)
+chat wipe                        # delete identity only
+chat wipe --peers                # delete identity + trust store
+chat wipe --received             # delete identity + received/ directory
+chat wipe --peers --received     # full reset: identity + trust + received/
 ```
 
-`Ctrl+W` inside a chat session does the same as `chat wipe --peers` and exits immediately.
+`Ctrl+W` inside a chat session wipes identity, trust store, and the `received/` directory, then exits immediately.
 
 ## Runtime Modes
 
@@ -272,6 +279,7 @@ File transfer is disabled in memory-only mode.
 
 - All traffic after the handshake is encrypted with ChaCha20-Poly1305.
 - The Noise XX pattern provides mutual authentication and forward secrecy.
+- Identity keys at rest are encrypted with AES-256-GCM, derived via argon2id (time=4, memory=128 MiB). Pass `--no-passphrase` to store keys as plaintext.
 - No message history is written to disk; the transcript exists only in process memory for the duration of the session.
+- Panic wipe (`Ctrl+W`) overwrites identity, trust store, and received files with zeros before removing them.
 - The app does not yet implement cryptographic memory zeroization — Go's GC controls object lifetime.
-- Panic wipe (`Ctrl+W`) destroys the identity and trust files but does not attempt to delete previously received files.
