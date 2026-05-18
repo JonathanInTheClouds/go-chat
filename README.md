@@ -1,41 +1,105 @@
 # chat
 
-A terminal-native encrypted 1:1 chat tool written in Go.
+> **Encrypted, peer-to-peer terminal chat — no servers, no accounts, no metadata.**
+
+```
+Alice                                        Bob
+─────────────────────────────────────────────────────
+$ chat serve -n Alice -u               $ chat connect -n Bob -u 192.168.1.10:7777
+
+identity passphrase: ****              identity passphrase: ****
+listening on 0.0.0.0:7777
+
+waiting for peer...
+peer connected from 192.168.1.20       First contact with Alice
+                                       Fingerprint: 12:34:56:78:90:AB:CD:EF:...
+First contact with Bob                 Verify out-of-band. Proceed? [y/N] y
+Fingerprint: AB:CD:EF:12:34:56:78:90
+Verify out-of-band. Proceed? [y/N] y
+
+┌─────────────────────────────── chat ───────────────────────────────┐
+│ Bob: hey Alice                                                      │
+│ Alice: hey! this connection is end-to-end encrypted                 │
+│ Bob: nice — no Signal, no accounts, just us                         │
+│ Alice: exactly                                                      │
+│                                                                     │
+│ > _                                                                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Why `chat`?
+
+Most secure messaging tools require a phone number, an account, or a third-party server holding your metadata. `chat` skips all of that.
+
+| | `chat` | Signal / iMessage | IRC / Matrix |
+|---|---|---|---|
+| Account required | No | Yes | Yes |
+| Server in the middle | No | Yes | Yes |
+| E2E encrypted | Yes | Yes | Varies |
+| No metadata on disk | Yes (memory mode) | No | No |
+| Works over LAN | Yes | No | No |
+| Panic wipe | Yes | No | No |
+| File transfer (E2E) | Yes | Yes | No |
+
+Two terminals. One command each. Fully encrypted from the first byte.
+
+---
 
 ## Features
 
-- **End-to-end encryption** via [Noise XX](https://noiseprotocol.org/) handshake (ChaCha20-Poly1305, forward secrecy)
-- **Mutual authentication** — each peer proves ownership of their identity keys before the session opens
-- **Trust-on-first-use (TOFU)** with persistent known-peers store and fingerprint pinning
-- **Fingerprint confirmation prompt** — verify peer identity out-of-band before connecting
-- **Passphrase-protected identity** — keys at rest are encrypted with argon2id + AES-256-GCM
-- **Explicit session admission** — both sides must accept before entering the chat UI
-- **Encrypted file transfer** in-band over the established session
-- **Memory-only mode** — ephemeral identity, no disk state, no file transfer
-- **Panic wipe** (`Ctrl+W`) — destroys identity, trust files, and received directory and exits immediately
-- **Per-IP rate limiting** on the server to block reconnect spam
-- **Terminal UI** powered by [Bubble Tea](https://github.com/charmbracelet/bubbletea)
-- **Tab completion** for shell commands and in-chat file paths
+### End-to-end encryption, always on
+
+Every session is encrypted with **ChaCha20-Poly1305** using keys negotiated via the **[Noise XX](https://noiseprotocol.org/) protocol** — the same protocol used by WireGuard and Signal's X3DH. Both peers authenticate before the chat UI opens. Forward secrecy means past sessions stay private even if long-term keys are compromised.
+
+### Zero-trust identity verification
+
+Each peer has a cryptographic fingerprint derived from their Ed25519 signing key and X25519 key agreement key. On first contact you verify the fingerprint out-of-band (phone call, Signal message, etc.) and pin it. Future connections are verified automatically — a changed fingerprint is flagged and blocked until you re-verify with `--allow-untrusted`.
+
+### No disk trace — memory-only mode
+
+Run with `-m` and nothing touches the filesystem. Identity is generated fresh each session, no trust store is written, and file transfer is disabled. When you quit, the session is gone.
+
+### Panic wipe
+
+Press `Ctrl+W` from inside any chat session. The identity file, trust store, and received-files directory are overwritten with zeros, then deleted. The process exits immediately.
+
+### Internet-ready without port forwarding
+
+Pass `--tunnel` when hosting and `chat` opens a public bore.pub tunnel automatically. Share the printed address with your peer — no router configuration needed.
+
+### Encrypted file transfer
+
+Send files directly through the established encrypted session with `/send`. The receiver saves them to `./received/`. No third-party storage, no links, no size limits imposed by the tool.
+
+### Passphrase-protected keys at rest
+
+Your identity file is encrypted with **AES-256-GCM**, the key derived via **argon2id** (time=4, memory=128 MiB). Leave the prompt blank to skip encryption. Pass `--no-passphrase` to bypass the prompt entirely in scripts or CI.
+
+### Polished terminal UI
+
+Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea). Scrollable message transcript, tab-completion for `/send` paths and slash commands, and a clean two-pane layout.
+
+---
 
 ## Installation
 
 ### Option 1 — Install script (recommended)
 
-Auto-detects your OS and architecture, downloads the right binary, and puts it on your PATH.
+Auto-detects OS and architecture, downloads the right binary, and puts it on your `PATH`.
 
-**macOS / Linux:**
+**macOS / Linux**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/JonathanInTheClouds/go-chat/main/install.sh | sh
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell)**
 ```powershell
 irm https://raw.githubusercontent.com/JonathanInTheClouds/go-chat/main/install.ps1 | iex
 ```
 
-Or grab a binary directly from the [releases page](https://github.com/JonathanInTheClouds/go-chat/releases).
-
-### Option 2 — go install
+### Option 2 — `go install`
 
 Requires Go 1.21+:
 
@@ -51,9 +115,149 @@ cd go-chat
 go build -o chat ./cmd/chat
 ```
 
-## Shell Completion
+Grab a pre-built binary from the [releases page](https://github.com/JonathanInTheClouds/go-chat/releases).
 
-Enable tab completion for commands and flags. Shell is auto-detected when no argument is given.
+---
+
+## Quick Start
+
+### LAN — two people on the same network
+
+**Step 1** — Find your IP address.
+
+```bash
+# macOS
+ipconfig getifaddr en0
+
+# Linux
+ip route get 1 | awk '{print $7; exit}'
+```
+
+**Step 2 — First contact** (both sides run this; `-u` is only needed once to exchange fingerprints).
+
+```bash
+# Host (Alice)
+chat serve -n Alice -u
+
+# Peer (Bob) — replace with Alice's IP
+chat connect -n Bob -u 192.168.1.10:7777
+```
+
+Each side is shown the other's fingerprint. Verify it out-of-band (voice call, text, etc.), type `y`, and the chat opens.
+
+**Step 3 — Reconnecting** (no `-u` needed; fingerprints are verified automatically).
+
+```bash
+# Host
+chat serve -n Alice
+
+# Peer
+chat connect -n Bob 192.168.1.10:7777
+```
+
+---
+
+### Internet — no port forwarding
+
+```bash
+# Host
+chat serve -n Alice -u --tunnel
+```
+
+Output:
+```
+tunnel ready: bore.pub:12345
+share with your friend:
+  chat connect -n <name> -u bore.pub:12345
+```
+
+```bash
+# Peer
+chat connect -n Bob -u bore.pub:12345
+```
+
+---
+
+### Local testing — two terminals, one machine
+
+```bash
+# Terminal 1
+chat serve -n Alice -u
+
+# Terminal 2
+chat connect -n Bob -u localhost:7777
+```
+
+---
+
+### Leave no trace — memory-only mode
+
+Nothing is written to disk. Identity rotates every session. File transfer is disabled.
+
+```bash
+# Host
+chat serve -n Alice -m -u
+
+# Peer
+chat connect -n Bob -m -u 192.168.1.10:7777
+```
+
+---
+
+## Usage Reference
+
+```
+chat serve   [-n name] [-p label] [-u] [-m] [--listen host:port] [--tunnel]
+chat connect [-n name] [-p label] [-u] [-m] host:port
+
+chat genkey      [--ephemeral] [--force]
+chat fingerprint [--ephemeral]
+chat wipe        [--peers] [--received]
+
+chat trust list
+chat trust set    <label> <fingerprint>
+chat trust remove <label>
+
+chat completion [bash|zsh|fish|powershell]
+```
+
+### Flags
+
+| Flag | Short | Description |
+|---|---|---|
+| `--name name` | `-n` | Display name shown to the peer (defaults to system username) |
+| `--peer label` | `-p` | Trust store label for the remote peer (defaults to peer's display name) |
+| `--allow-untrusted` | `-u` | Accept first contact or a changed fingerprint and persist trust |
+| `--memory-only` | `-m` | Ephemeral identity, no disk state, no file transfer |
+| `--no-passphrase` | | Skip passphrase protection for the identity file |
+| `--listen host:port` | | Address to listen on (serve only; default `0.0.0.0:7777`) |
+| `--tunnel` | | Expose the server via a bore.pub tunnel (serve only) |
+| `--ephemeral` | | Throwaway in-memory identity for `genkey` / `fingerprint` |
+| `--force` | | Overwrite an existing persistent identity when running `genkey` |
+| `--peers` | | Also delete the trust store when running `wipe` |
+| `--received` | | Also wipe the `received/` directory when running `wipe` |
+
+**Advanced flags** (hidden from `--help`):
+
+| Flag | Description |
+|---|---|
+| `--identity path` | Override the default identity file location |
+| `--known-peers path` | Override the default known peers file location |
+
+### In-chat commands
+
+| Key / Command | Action |
+|---|---|
+| `/send <path>` | Send a file (Tab completes paths; disabled in memory-only mode) |
+| `/quit` | End the session and exit |
+| `Tab` | Complete `/send` paths and slash commands |
+| `Esc` / `Ctrl+C` | End the session and exit |
+| `Ctrl+W` | **Panic wipe** — zero-wipe identity, trust store, and `received/`, then exit |
+| `PgUp` / `PgDn` | Scroll the message transcript |
+
+---
+
+## Shell Completion
 
 ```bash
 # bash — add to ~/.bashrc
@@ -69,158 +273,44 @@ chat completion fish | source
 Invoke-Expression (& chat completion powershell)
 ```
 
-## Quick Start
-
-### Step 1 — Find your IP address
-
-```bash
-# macOS
-ipconfig getifaddr en0
-
-# Linux
-ip route get 1 | awk '{print $7; exit}'
-```
-
-### Step 2 — First time connecting (both sides run this)
-
-**Person hosting:**
-```bash
-chat serve -n Alice -u
-```
-
-**Person connecting** (replace `192.168.1.10` with the host's IP):
-```bash
-chat connect -n Bob -u 192.168.1.10:7777
-```
-
-`-u` (`--allow-untrusted`) is only needed the first time. It pins each other's fingerprint so future connections are verified automatically. The peer's display name is used as their trust label automatically — no need to set `--peer` unless you want a custom label.
-
-### Step 3 — Reconnecting (after first contact)
-
-**Person hosting:**
-```bash
-chat serve -n Alice
-```
-
-**Person connecting:**
-```bash
-chat connect -n Bob 192.168.1.10:7777
-```
-
-### Local testing (two terminals, same machine)
-
-**Terminal 1:**
-```bash
-chat serve -n Alice -u
-```
-
-**Terminal 2:**
-```bash
-chat connect -n Bob -u localhost:7777
-```
-
-### Connect over the internet via tunnel
-
-No port forwarding required. The host gets a public address via [bore.pub](https://bore.pub):
-
-**Person hosting:**
-```bash
-chat serve -n Alice -u --tunnel
-```
-
-The tunnel URL is printed on startup — share it with your peer:
-
-```
-tunnel ready: bore.pub:12345
-share with your friend:
-  chat connect -n <name> -u bore.pub:12345
-```
-
-### Memory-only mode (no identity or trust saved to disk)
-
-Use this when you want a session that leaves no trace. Nothing is written to disk and file transfer is disabled.
-
-**Person hosting:**
-```bash
-chat serve -n Alice -m -u
-```
-
-**Person connecting:**
-```bash
-chat connect -n Bob -m -u 192.168.1.10:7777
-```
-
-## Usage
-
-```
-chat serve [-n name] [-p peer] [-u] [-m] [--listen host:port] [--tunnel]
-chat connect [-n name] [-p peer] [-u] [-m] host:port
-
-chat genkey [--ephemeral] [--force]
-chat fingerprint [--ephemeral]
-chat wipe [--peers]
-
-chat trust list
-chat trust set <label> <fingerprint>
-chat trust remove <label>
-
-chat completion [bash|zsh|fish|powershell]
-```
-
-### Flags
-
-| Flag | Short | Description |
-|---|---|---|
-| `--name name` | `-n` | Your display name shown to the peer (defaults to system username) |
-| `--peer label` | `-p` | Label for the remote peer in the trust store (defaults to the peer's display name) |
-| `--allow-untrusted` | `-u` | Accept first contact or a changed peer fingerprint and persist trust |
-| `--memory-only` | `-m` | Ephemeral identity, no disk state, no file transfer |
-| `--no-passphrase` | | Skip passphrase protection for the identity file |
-| `--listen host:port` | | Address to listen on, serve only (default `0.0.0.0:7777`) |
-| `--tunnel` | | Expose the server via a bore.pub tunnel (serve only) |
-| `--ephemeral` | | Throwaway in-memory identity for `genkey` / `fingerprint` |
-| `--force` | | Overwrite an existing persistent identity when running `genkey` |
-| `--peers` | | Also delete the trust store when running `wipe` |
-| `--received` | | Also securely wipe the `received/` directory when running `wipe` |
-
-### Advanced flags
-
-These are hidden from `--help` but work on any command that reads from disk:
-
-| Flag | Description |
-|---|---|
-| `--identity path` | Override the default identity file location |
-| `--known-peers path` | Override the default known peers file location |
-
-## In-Chat Commands
-
-| Command | Description |
-|---|---|
-| `/send <path>` | Send a file to the peer (Tab completes paths; disabled in memory-only mode) |
-| `/quit` | End the session and exit |
-| `Tab` | Complete `/send` paths and slash commands |
-| `Esc` / `Ctrl+C` | End the session and exit |
-| `Ctrl+W` | **Panic wipe** — securely wipe identity, trust store, and received/ then exit |
-| `PgUp` / `PgDn` | Scroll the message transcript |
+---
 
 ## Identity and Trust
 
 Each peer has two keys:
 
-- **Ed25519** signing key — used to prove identity
-- **X25519** key agreement key — used as the Noise static key for the handshake
+- **Ed25519** signing key — proves identity
+- **X25519** key agreement key — Noise static key for the handshake
 
-A **fingerprint** is derived as `SHA-256(ed25519_pub || x25519_pub)`, displayed as colon-separated hex pairs (e.g., `AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90`).
+The **fingerprint** is `SHA-256(ed25519_pub || x25519_pub)`, shown as colon-separated hex (e.g., `AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90`).
 
-Trust entries are stored at `~/.config/chat/known_peers.json`. The identity file lives at `~/.config/chat/identity.json`. Both paths can be overridden with flags.
+Default file locations:
 
-### Example Sessions
+| File | Path |
+|---|---|
+| Identity | `~/.config/chat/identity.json` |
+| Trust store | `~/.config/chat/known_peers.json` |
+| Received files | `./received/` |
 
-#### First contact
+### Trust store operations
 
-Neither side trusts an unknown peer by default. Both sides must pass `-u` the first time. Each side will be shown the other's fingerprint and asked to confirm before the session opens.
+```bash
+# List trusted peers
+chat trust list
 
-**Alice (hosting):**
+# Manually pin a fingerprint (useful for memory-only peers or pre-provisioning)
+chat trust set alice 12:34:56:78:90:AB:CD:EF:12:34:56:78:90:AB:CD:EF
+
+# Remove a peer
+chat trust remove alice
+```
+
+---
+
+## Example Sessions
+
+### First contact
+
 ```
 $ chat serve -n Alice -u
 
@@ -233,39 +323,20 @@ peer connected from 192.168.1.20:54321
 First contact with Bob
 Their fingerprint: AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90
 
-Verify this fingerprint with your peer out-of-band (call, Signal, etc.)
-before continuing. Proceed? [y/N] y
-First contact for Bob. Stored peer fingerprint AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90.
+Verify this fingerprint with your peer out-of-band before continuing.
+Proceed? [y/N] y
+First contact for Bob. Stored fingerprint AB:CD:EF:...
 [chat opens]
 ```
 
-**Bob (connecting):**
-```
-$ chat connect -n Bob -u 192.168.1.10:7777
-
-identity passphrase:
-Using persistent identity at ~/.config/chat/identity.json.
-dialing 192.168.1.10:7777
-
-First contact with Alice
-Their fingerprint: 12:34:56:78:90:AB:CD:EF:12:34:56:78:90:AB:CD:EF
-
-Verify this fingerprint with your peer out-of-band (call, Signal, etc.)
-before continuing. Proceed? [y/N] y
-First contact for Alice. Stored peer fingerprint 12:34:56:78:90:AB:CD:EF:12:34:56:78:90:AB:CD:EF.
-[chat opens]
-```
-
-After this, Alice's trust store has an entry for `Bob` and Bob's has an entry for `Alice`.
+After first contact, the trust store has an entry for `Bob`:
 
 ```
 $ chat trust list
-Bob   AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90   first-seen=2025-01-01T12:00:00Z   last-seen=2025-01-01T12:00:00Z
+Bob   AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90   first-seen=2025-01-01T12:00:00Z
 ```
 
-#### Reconnecting
-
-No `-u` needed. The fingerprint is verified automatically against the stored entry.
+### Reconnecting (verified automatically)
 
 ```
 $ chat serve -n Alice
@@ -277,102 +348,89 @@ Peer identity for Bob matches the stored fingerprint.
 [chat opens]
 ```
 
-#### What happens if Bob changes his display name
+### Peer changes display name
 
-The trust label is the peer's display name. If Bob reconnects as `-n Robert`, Alice's store has no entry under `Robert` — it looks like a stranger.
+The trust label defaults to the peer's display name. If Bob reconnects as `-n Robert`, his label doesn't match:
 
 ```
-$ chat serve -n Alice
-
 peer connected from 192.168.1.20:54321
-Untrusted peer Robert with fingerprint AB:CD:EF:... Re-run with --allow-untrusted to trust and continue.
-session rejected; returning to listener
+Untrusted peer Robert with fingerprint AB:CD:EF:...
+Re-run with --allow-untrusted to trust and continue.
 ```
 
-To avoid this, use `--peer` on both sides to set a fixed label that doesn't depend on the display name:
+Use `--peer` on both sides to pin a label independent of the display name:
 
 ```bash
-chat serve -n Alice -p bob -u
-chat connect -n Bob -p alice -u 192.168.1.10:7777
+chat serve   -n Alice -p bob   -u
+chat connect -n Bob   -p alice -u 192.168.1.10:7777
 ```
 
-The trust entry is now keyed `bob` / `alice` permanently, regardless of what `--name` either side uses.
-
-#### Fingerprint changed (new device or key rotation)
+### Fingerprint changed (new device or key rotation)
 
 Without `-u`, the connection is blocked:
 
 ```
-peer connected from 192.168.1.20:54321
 Blocked peer Bob because the fingerprint changed.
   expected AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90
   observed 99:88:77:66:55:44:33:22:11:00:FF:EE:DD:CC:BB:AA
-Re-run with --allow-untrusted after verification to rotate trust.
+Re-run with --allow-untrusted after verifying out-of-band.
 ```
 
-With `-u`, you get a warning and a chance to re-pin after verifying out-of-band:
+With `-u`, you are shown the change and can confirm:
 
 ```
 WARNING: fingerprint for Bob has changed.
 Expected: AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90
 Observed: 99:88:77:66:55:44:33:22:11:00:FF:EE:DD:CC:BB:AA
 
-Only proceed if you have verified this new fingerprint out-of-band.
+Only proceed if you have verified this fingerprint out-of-band.
 Proceed? [y/N] y
-Peer identity for Bob was re-trusted with fingerprint 99:88:77:...
+Peer identity for Bob re-trusted with fingerprint 99:88:77:...
 ```
 
-#### Declining the fingerprint prompt
+### Declining a fingerprint prompt
 
-If you type `n` or press Enter at the `Proceed? [y/N]` prompt, the session is rejected immediately — no data is exchanged and nothing is stored.
+Type `n` or press Enter — the session is rejected and nothing is stored:
 
 ```
 Proceed? [y/N] n
 session rejected; returning to listener
 ```
 
+---
+
 ## Passphrase Protection
 
-By default, `chat` encrypts your identity file at rest using a passphrase you choose when the identity is first created. The file format uses **argon2id** (time=4, memory=128 MiB) to derive a key, then **AES-256-GCM** to encrypt the key material.
+Your identity is encrypted at rest using **AES-256-GCM**, the key derived via **argon2id** (time=4, memory=128 MiB).
 
-### First run
-
-The first time you run `chat serve` or `chat connect` (or explicitly with `chat genkey`), you are prompted for a new passphrase:
+**First run** — prompted to set a passphrase (leave blank for plaintext):
 
 ```
 new identity passphrase (leave blank to skip encryption):
 confirm passphrase:
 ```
 
-Leaving the prompt blank skips encryption and saves the identity as plaintext.
-
-### Subsequent runs
-
-Every command that loads your identity (serve, connect, fingerprint) prompts for the passphrase if the file is encrypted:
+**Subsequent runs** — prompted to unlock:
 
 ```
 identity passphrase:
 ```
 
-### Skipping passphrase protection
-
-Pass `--no-passphrase` to any command to skip the prompt entirely and store or load the identity as plaintext:
+**Skip the prompt entirely** (scripting, CI):
 
 ```bash
-chat genkey --no-passphrase
-chat serve --no-passphrase -n Alice -p bob -u
-chat connect --no-passphrase -n Bob -p alice -u 192.168.1.10:7777
+chat serve --no-passphrase -n Alice -u
 ```
 
-### Upgrading an existing plaintext identity
-
-If you created an identity before v0.3.0 (or used `--no-passphrase`), you can add passphrase protection by regenerating with `--force`:
+**Add passphrase to an existing plaintext identity** — regenerates the keypair:
 
 ```bash
-chat genkey --force    # prompts for a new passphrase, overwrites the identity file
+chat genkey --force
 ```
 
-Note: regenerating creates a new keypair. Your peer will need to re-trust your new fingerprint with `--allow-untrusted`.
+> Note: your peer will need to re-trust your new fingerprint.
+
+---
 
 ## Wiping State
 
@@ -380,48 +438,18 @@ Note: regenerating creates a new keypair. Your peer will need to re-trust your n
 chat wipe                        # delete identity only
 chat wipe --peers                # delete identity + trust store
 chat wipe --received             # delete identity + received/ directory
-chat wipe --peers --received     # full reset: identity + trust + received/
+chat wipe --peers --received     # full reset
 ```
 
-`Ctrl+W` inside a chat session wipes identity, trust store, and the `received/` directory, then exits immediately.
+`Ctrl+W` inside a session wipes identity, trust store, and `received/`, then exits immediately.
 
-## Runtime Modes
-
-### Normal (persistent)
-
-Default behavior. Identity and trust state persist across runs. Received files are saved to `./received/`.
-
-### Memory-only (`-m` / `--memory-only`)
-
-```bash
-chat serve -m
-chat connect -m host:port
-```
-
-- Ephemeral in-memory identity (rotates every run)
-- No trust state written to disk
-- File transfer disabled
-- No `received/` directory created
-
-A persistent peer will see a memory-only peer as a new identity on every connection and will require `--allow-untrusted` each time unless trust is managed manually with `chat trust set`.
-
-## File Transfer
-
-Send a file during an active chat session:
-
-```
-/send /path/to/file.pdf
-```
-
-Files are transferred encrypted, in-band, over the established Noise session. The receiver saves them under `./received/` in the current working directory. Filename collisions are resolved automatically (`file_1.pdf`, `file_2.pdf`, etc.).
-
-File transfer is disabled in memory-only mode.
+---
 
 ## Security Notes
 
-- All traffic after the handshake is encrypted with ChaCha20-Poly1305.
-- The Noise XX pattern provides mutual authentication and forward secrecy.
-- Identity keys at rest are encrypted with AES-256-GCM, derived via argon2id (time=4, memory=128 MiB). Pass `--no-passphrase` to store keys as plaintext.
-- No message history is written to disk; the transcript exists only in process memory for the duration of the session.
-- Panic wipe (`Ctrl+W`) overwrites identity, trust store, and received files with zeros before removing them.
-- The app does not yet implement cryptographic memory zeroization — Go's GC controls object lifetime.
+- All traffic is encrypted with **ChaCha20-Poly1305** after the Noise XX handshake.
+- The Noise XX pattern provides **mutual authentication** and **forward secrecy**.
+- Identity keys at rest are protected with **AES-256-GCM + argon2id**.
+- No message history is written to disk — the transcript lives only in process memory.
+- Panic wipe (`Ctrl+W`) overwrites files with zeros before deletion.
+- Cryptographic memory zeroization is not yet implemented — Go's GC controls object lifetime.
