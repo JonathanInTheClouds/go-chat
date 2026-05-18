@@ -1,16 +1,20 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os/user"
+	"strconv"
 	"time"
 
 	cryptopkg "chat/internal/crypto"
 	netpkg "chat/internal/net"
 	"chat/internal/protocol"
+	tunnelpkg "chat/internal/tunnel"
 	"chat/internal/trust"
 	"chat/internal/ui"
 )
@@ -73,6 +77,7 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 	allowUntrusted := fs.Bool("allow-untrusted", false, "allow first-contact or changed peer fingerprints and persist trust")
 	memoryOnly := fs.Bool("memory-only", false, "disable app-managed disk persistence for this session")
 	localName := fs.String("name", defaultName(), "your display name shown to the peer")
+	tunnel := fs.Bool("tunnel", false, "expose the server via a bore.pub tunnel")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -119,6 +124,31 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 	defer listener.Close()
+
+	if *tunnel {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		_, portStr, err := net.SplitHostPort(*listen)
+		if err != nil {
+			return fmt.Errorf("parse listen address: %w", err)
+		}
+		localPort, err := strconv.Atoi(portStr)
+		if err != nil {
+			return fmt.Errorf("parse listen port: %w", err)
+		}
+
+		publicAddr, err := tunnelpkg.Start(ctx, localPort)
+		if err != nil {
+			return fmt.Errorf("start tunnel: %w", err)
+		}
+		if _, err := fmt.Fprintf(stdout, "tunnel ready: %s\n", publicAddr); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(stdout, "share with your friend:\n  chat connect --name <their-name> --peer <label> --allow-untrusted %s\n\n", publicAddr); err != nil {
+			return err
+		}
+	}
 
 	for {
 		conn, peer, err := listener.Accept(identity, stdout)
