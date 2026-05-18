@@ -12,14 +12,37 @@ A terminal-native encrypted 1:1 chat tool written in Go.
 - **Memory-only mode** — ephemeral identity, no disk state, no file transfer
 - **Panic wipe** (`Ctrl+W`) — destroys identity and trust files and exits immediately
 - **Terminal UI** powered by [Bubble Tea](https://github.com/charmbracelet/bubbletea)
+- **Tab completion** for shell commands and in-chat file paths
 
 ## Installation
 
+### Option 1 — Download a binary (recommended)
+
+Download the latest release for your platform from the [releases page](https://github.com/JonathanInTheClouds/go-chat/releases), extract it, and move `chat` onto your `$PATH`:
+
 ```bash
-go install chat@latest
+# macOS (Apple Silicon)
+curl -L https://github.com/JonathanInTheClouds/go-chat/releases/latest/download/chat_latest_darwin_arm64.tar.gz | tar xz
+sudo mv chat /usr/local/bin/
+
+# macOS (Intel)
+curl -L https://github.com/JonathanInTheClouds/go-chat/releases/latest/download/chat_latest_darwin_amd64.tar.gz | tar xz
+sudo mv chat /usr/local/bin/
+
+# Linux (amd64)
+curl -L https://github.com/JonathanInTheClouds/go-chat/releases/latest/download/chat_latest_linux_amd64.tar.gz | tar xz
+sudo mv chat /usr/local/bin/
 ```
 
-Or build from source:
+### Option 2 — go install
+
+Requires Go 1.21+:
+
+```bash
+go install github.com/JonathanInTheClouds/go-chat/cmd/chat@latest
+```
+
+### Option 3 — Build from source
 
 ```bash
 git clone https://github.com/JonathanInTheClouds/go-chat.git
@@ -27,24 +50,46 @@ cd go-chat
 go build -o chat ./cmd/chat
 ```
 
+## Shell Completion
+
+Enable tab completion for commands and flags. Shell is auto-detected when no argument is given.
+
+```bash
+# bash — add to ~/.bashrc
+eval "$(chat completion bash)"
+
+# zsh — add to ~/.zshrc
+eval "$(chat completion zsh)"
+
+# fish — add to ~/.config/fish/config.fish
+chat completion fish | source
+
+# PowerShell — add to $PROFILE
+Invoke-Expression (& chat completion powershell)
+```
+
 ## Quick Start
 
 ### Step 1 — Find your IP address
 
 ```bash
+# macOS
 ipconfig getifaddr en0
+
+# Linux
+ip route get 1 | awk '{print $7; exit}'
 ```
 
 ### Step 2 — First time connecting (both sides run this)
 
 **Person hosting:**
 ```bash
-go run ./cmd/chat serve --name Alice --peer bob --allow-untrusted --listen 0.0.0.0:8888
+chat serve --name Alice --peer bob --allow-untrusted
 ```
 
 **Person connecting** (replace `192.168.1.10` with the host's IP):
 ```bash
-go run ./cmd/chat connect --name Bob --peer alice --allow-untrusted 192.168.1.10:8888
+chat connect --name Bob --peer alice --allow-untrusted 192.168.1.10:7777
 ```
 
 `--allow-untrusted` is only needed the first time. It pins the peer's fingerprint so future connections are verified automatically.
@@ -53,47 +98,65 @@ go run ./cmd/chat connect --name Bob --peer alice --allow-untrusted 192.168.1.10
 
 **Person hosting:**
 ```bash
-go run ./cmd/chat serve --name Alice --peer bob --listen 0.0.0.0:8888
+chat serve --name Alice --peer bob
 ```
 
 **Person connecting:**
 ```bash
-go run ./cmd/chat connect --name Bob --peer alice 192.168.1.10:8888
+chat connect --name Bob --peer alice 192.168.1.10:7777
 ```
 
 ### Local testing (two terminals, same machine)
 
 **Terminal 1:**
 ```bash
-go run ./cmd/chat serve --name Alice --peer bob --allow-untrusted --listen 0.0.0.0:8888
+chat serve --name Alice --peer bob --allow-untrusted
 ```
 
 **Terminal 2:**
 ```bash
-go run ./cmd/chat connect --name Bob --peer alice --allow-untrusted localhost:8888
+chat connect --name Bob --peer alice --allow-untrusted localhost:7777
+```
+
+### Connect over the internet via tunnel
+
+No port forwarding required. The host gets a public address via [bore.pub](https://bore.pub):
+
+**Person hosting:**
+```bash
+chat serve --name Alice --peer bob --allow-untrusted --tunnel
+```
+
+The tunnel URL is printed on startup — share it with your peer:
+
+```
+tunnel ready: bore.pub:12345
+share with your friend:
+  chat connect --name <their-name> --peer <label> --allow-untrusted bore.pub:12345
 ```
 
 ### Memory-only mode (no identity or trust saved to disk)
 
-Use this when you want a session that leaves no trace. Nothing is written to disk and file transfer is disabled. Both sides get a fresh identity every run, so `--allow-untrusted` is always required.
+Use this when you want a session that leaves no trace. Nothing is written to disk and file transfer is disabled.
 
 **Person hosting:**
 ```bash
-go run ./cmd/chat serve --name Alice --memory-only --allow-untrusted --listen 0.0.0.0:8888
+chat serve --name Alice --memory-only --allow-untrusted
 ```
 
 **Person connecting:**
 ```bash
-go run ./cmd/chat connect --name Bob --memory-only --allow-untrusted 192.168.1.10:8888
+chat connect --name Bob --memory-only --allow-untrusted 192.168.1.10:7777
 ```
 
 ## Usage
 
 ```
-chat serve [--listen host:port] [--ephemeral] [--identity path] [--known-peers path]
-           [--peer label] [--allow-untrusted] [--memory-only]
+chat serve [--listen host:port] [--name name] [--tunnel] [--ephemeral]
+           [--identity path] [--known-peers path] [--peer label]
+           [--allow-untrusted] [--memory-only]
 
-chat connect [--ephemeral] [--identity path] [--known-peers path]
+chat connect [--name name] [--ephemeral] [--identity path] [--known-peers path]
              [--peer label] [--allow-untrusted] [--memory-only] host:port
 
 chat genkey [--identity path] [--force]
@@ -104,14 +167,17 @@ chat wipe [--identity path]
 chat trust list   [--known-peers path]
 chat trust set    [--known-peers path] <label> <fingerprint>
 chat trust remove [--known-peers path] <label>
+
+chat completion [bash|zsh|fish|powershell]
 ```
 
 ### Flags
 
 | Flag | Description |
 |---|---|
-| `--name name` | Your display name shown to the peer in chat (defaults to system username) |
+| `--name name` | Your display name shown to the peer (defaults to system username) |
 | `--listen host:port` | Address to listen on (default `0.0.0.0:7777`) |
+| `--tunnel` | Expose the server via a bore.pub tunnel (serve only) |
 | `--peer label` | Local label for the remote peer used in the trust store |
 | `--allow-untrusted` | Accept first contact or a changed peer fingerprint and persist trust |
 | `--memory-only` | Use an ephemeral identity; disable disk persistence and file transfer |
@@ -124,8 +190,9 @@ chat trust remove [--known-peers path] <label>
 
 | Command | Description |
 |---|---|
-| `/send <path>` | Send a file to the peer (disabled in memory-only mode) |
+| `/send <path>` | Send a file to the peer (Tab completes paths; disabled in memory-only mode) |
 | `/quit` | End the session and exit |
+| `Tab` | Complete `/send` paths and slash commands |
 | `Esc` / `Ctrl+C` | End the session and exit |
 | `Ctrl+W` | **Panic wipe** — delete identity + trust files and exit immediately |
 | `PgUp` / `PgDn` | Scroll the message transcript |
@@ -147,10 +214,10 @@ Neither side trusts an unknown peer by default. Pass `--allow-untrusted` on both
 
 ```bash
 # Alice (hosting)
-go run ./cmd/chat serve --name Alice --peer bob --allow-untrusted --listen 0.0.0.0:8888
+chat serve --name Alice --peer bob --allow-untrusted
 
 # Bob (connecting)
-go run ./cmd/chat connect --name Bob --peer alice --allow-untrusted 192.168.1.10:8888
+chat connect --name Bob --peer alice --allow-untrusted 192.168.1.10:7777
 ```
 
 After the first session, the fingerprint is pinned. Future connections succeed without `--allow-untrusted`.
