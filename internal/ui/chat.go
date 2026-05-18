@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -77,6 +78,9 @@ type chatModel struct {
 	lastTypingSentAt time.Time
 	localName        string
 	peerName         string
+	completions      []string
+	completionIdx    int
+	completionBase   string
 }
 
 type RuntimeOptions struct {
@@ -257,6 +261,9 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlW:
 			m.quitting = true
 			return m, panicWipeCmd(m.runtimeOptions, m.session)
+		case tea.KeyTab:
+			m.handleTab()
+			return m, nil
 		case tea.KeyEnter:
 			body := strings.TrimSpace(m.input.Value())
 			if body == "" {
@@ -363,10 +370,16 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
 
-	if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyRunes {
-		if !m.disconnected && !m.quitting && time.Since(m.lastTypingSentAt) > 2*time.Second {
-			m.lastTypingSentAt = time.Now()
-			cmds = append(cmds, sendTypingCmd(m.session))
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.Type {
+		case tea.KeyRunes:
+			m.completions = nil
+			if !m.disconnected && !m.quitting && time.Since(m.lastTypingSentAt) > 2*time.Second {
+				m.lastTypingSentAt = time.Now()
+				cmds = append(cmds, sendTypingCmd(m.session))
+			}
+		case tea.KeyBackspace, tea.KeyDelete, tea.KeyLeft, tea.KeyRight, tea.KeyHome, tea.KeyEnd:
+			m.completions = nil
 		}
 	}
 
@@ -682,6 +695,119 @@ func indentBlock(value, prefix string) string {
 		parts[idx] = prefix + parts[idx]
 	}
 	return strings.Join(parts, "\n")
+}
+
+var slashCommands = []string{"/quit", "/send "}
+
+func (m *chatModel) handleTab() {
+	current := m.input.Value()
+
+	// If we don't have an active completion session, build one.
+	if m.completions == nil {
+		m.completionBase = current
+		m.completions = buildCompletions(current, m.runtimeOptions.MemoryOnly)
+		m.completionIdx = -1
+		if len(m.completions) == 0 {
+			return
+		}
+	}
+
+	if len(m.completions) == 0 {
+		return
+	}
+
+	m.completionIdx = (m.completionIdx + 1) % len(m.completions)
+	m.input.SetValue(m.completions[m.completionIdx])
+	m.input.CursorEnd()
+}
+
+func buildCompletions(input string, memoryOnly bool) []string {
+	if strings.HasPrefix(input, "/send ") {
+		partial := input[len("/send "):]
+		paths := completePaths(partial)
+		completions := make([]string, len(paths))
+		for i, p := range paths {
+			completions[i] = "/send " + p
+		}
+		return completions
+	}
+
+	if strings.HasPrefix(input, "/") && !strings.Contains(input, " ") {
+		var matches []string
+		for _, cmd := range slashCommands {
+			if memoryOnly && cmd == "/send " {
+				continue
+			}
+			if strings.HasPrefix(cmd, input) {
+				matches = append(matches, cmd)
+			}
+		}
+		return matches
+	}
+
+	return nil
+}
+
+func completePaths(partial string) []string {
+	expanded := expandHome(partial)
+
+	// Determine the directory to search and the file prefix.
+	var dir, prefix string
+	if strings.HasSuffix(expanded, string(filepath.Separator)) || expanded == "" {
+		dir = expanded
+		if dir == "" {
+			dir = "."
+		}
+		prefix = ""
+	} else {
+		dir = filepath.Dir(expanded)
+		prefix = filepath.Base(expanded)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var matches []string
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		full := filepath.Join(dir, name)
+		if e.IsDir() {
+			full += string(filepath.Separator)
+		}
+		// Restore ~ if the user typed it.
+		if strings.HasPrefix(partial, "~/") || partial == "~" {
+			home, err := os.UserHomeDir()
+			if err == nil {
+				full = "~" + strings.TrimPrefix(full, home)
+			}
+		}
+		matches = append(matches, full)
+	}
+	sort.Strings(matches)
+	return matches
+}
+
+func expandHome(path string) string {
+	if path == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return filepath.Join(home, path[2:])
+	}
+	return path
 }
 
 func max(a, b int) int {
