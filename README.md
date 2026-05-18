@@ -20,18 +20,29 @@ A terminal-native encrypted 1:1 chat tool written in Go.
 
 Download the latest release for your platform from the [releases page](https://github.com/JonathanInTheClouds/go-chat/releases), extract it, and move `chat` onto your `$PATH`:
 
+**macOS (Apple Silicon):**
 ```bash
-# macOS (Apple Silicon)
 curl -L https://github.com/JonathanInTheClouds/go-chat/releases/latest/download/chat_latest_darwin_arm64.tar.gz | tar xz
 sudo mv chat /usr/local/bin/
+```
 
-# macOS (Intel)
+**macOS (Intel):**
+```bash
 curl -L https://github.com/JonathanInTheClouds/go-chat/releases/latest/download/chat_latest_darwin_amd64.tar.gz | tar xz
 sudo mv chat /usr/local/bin/
+```
 
-# Linux (amd64)
+**Linux (amd64):**
+```bash
 curl -L https://github.com/JonathanInTheClouds/go-chat/releases/latest/download/chat_latest_linux_amd64.tar.gz | tar xz
 sudo mv chat /usr/local/bin/
+```
+
+**Windows (PowerShell):**
+```powershell
+Invoke-WebRequest -Uri https://github.com/JonathanInTheClouds/go-chat/releases/latest/download/chat_latest_windows_amd64.zip -OutFile chat.zip
+Expand-Archive chat.zip -DestinationPath .
+Move-Item chat.exe $env:USERPROFILE\AppData\Local\Microsoft\WindowsApps\
 ```
 
 ### Option 2 — go install
