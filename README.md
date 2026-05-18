@@ -200,7 +200,7 @@ These are hidden from `--help` but work on any command that reads from disk:
 | `/quit` | End the session and exit |
 | `Tab` | Complete `/send` paths and slash commands |
 | `Esc` / `Ctrl+C` | End the session and exit |
-| `Ctrl+W` | **Panic wipe** — delete identity + trust files and exit immediately |
+| `Ctrl+W` | **Panic wipe** — securely wipe identity, trust store, and received/ then exit |
 | `PgUp` / `PgDn` | Scroll the message transcript |
 
 ## Identity and Trust
@@ -231,6 +231,49 @@ After the first session, the fingerprint is pinned. Future connections succeed w
 ### Fingerprint Rotation
 
 If a peer's fingerprint changes (key rotation, new device), the connection is blocked until `--allow-untrusted` is passed again to accept and re-pin the new fingerprint.
+
+## Passphrase Protection
+
+By default, `chat` encrypts your identity file at rest using a passphrase you choose when the identity is first created. The file format uses **argon2id** (time=4, memory=128 MiB) to derive a key, then **AES-256-GCM** to encrypt the key material.
+
+### First run
+
+The first time you run `chat serve` or `chat connect` (or explicitly with `chat genkey`), you are prompted for a new passphrase:
+
+```
+new identity passphrase (leave blank to skip encryption):
+confirm passphrase:
+```
+
+Leaving the prompt blank skips encryption and saves the identity as plaintext.
+
+### Subsequent runs
+
+Every command that loads your identity (serve, connect, fingerprint) prompts for the passphrase if the file is encrypted:
+
+```
+identity passphrase:
+```
+
+### Skipping passphrase protection
+
+Pass `--no-passphrase` to any command to skip the prompt entirely and store or load the identity as plaintext:
+
+```bash
+chat genkey --no-passphrase
+chat serve --no-passphrase -n Alice -p bob -u
+chat connect --no-passphrase -n Bob -p alice -u 192.168.1.10:7777
+```
+
+### Upgrading an existing plaintext identity
+
+If you created an identity before v0.3.0 (or used `--no-passphrase`), you can add passphrase protection by regenerating with `--force`:
+
+```bash
+chat genkey --force    # prompts for a new passphrase, overwrites the identity file
+```
+
+Note: regenerating creates a new keypair. Your peer will need to re-trust your new fingerprint with `--allow-untrusted`.
 
 ## Wiping State
 
