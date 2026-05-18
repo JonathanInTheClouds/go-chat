@@ -370,7 +370,7 @@ func runServe(stdin io.Reader, stdout io.Writer, listen, identityPath, knownPeer
 		if _, err := fmt.Fprintf(stdout, "tunnel ready: %s\n", publicAddr); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(stdout, "share with your friend:\n  chat connect --name <their-name> --peer <label> --allow-untrusted %s\n\n", publicAddr); err != nil {
+		if _, err := fmt.Fprintf(stdout, "share with your friend:\n  chat connect -n <name> -u %s\n\n", publicAddr); err != nil {
 			return err
 		}
 	}
@@ -401,7 +401,21 @@ func runServe(stdin io.Reader, stdout io.Writer, listen, identityPath, knownPeer
 			ipLastSeen[remoteIP] = now
 		}
 
-		trustErr := reportPeerTrust(stdin, stdout, runtime, peerLabel, conn.RemoteAddress(), peer.Fingerprint, allowUntrusted)
+		peerName, err := exchangeNames(conn, false, localName)
+		if err != nil {
+			_ = conn.Close()
+			if _, writeErr := fmt.Fprintln(stdout, "name exchange failed; returning to listener"); writeErr != nil {
+				return writeErr
+			}
+			continue
+		}
+
+		fallbackLabel := peerName
+		if fallbackLabel == "" {
+			fallbackLabel = conn.RemoteAddress()
+		}
+
+		trustErr := reportPeerTrust(stdin, stdout, runtime, peerLabel, fallbackLabel, peer.Fingerprint, allowUntrusted)
 		if err := coordinateSessionAdmission(conn, false, trustErr); err != nil {
 			_ = conn.Close()
 			if isSessionRejected(err) {
@@ -411,15 +425,6 @@ func runServe(stdin io.Reader, stdout io.Writer, listen, identityPath, knownPeer
 				continue
 			}
 			return err
-		}
-
-		peerName, err := exchangeNames(conn, false, localName)
-		if err != nil {
-			_ = conn.Close()
-			if _, writeErr := fmt.Fprintln(stdout, "name exchange failed; returning to listener"); writeErr != nil {
-				return writeErr
-			}
-			continue
 		}
 
 		err = ui.RunChat(stdin, stdout, conn, peer, ui.RuntimeOptions{
@@ -480,13 +485,18 @@ func runConnect(stdin io.Reader, stdout io.Writer, address, identityPath, knownP
 	}
 	defer conn.Close()
 
-	trustErr := reportPeerTrust(stdin, stdout, runtime, peerLabel, address, peer.Fingerprint, allowUntrusted)
-	if err := coordinateSessionAdmission(conn, true, trustErr); err != nil {
+	peerName, err := exchangeNames(conn, true, localName)
+	if err != nil {
 		return err
 	}
 
-	peerName, err := exchangeNames(conn, true, localName)
-	if err != nil {
+	fallbackLabel := peerName
+	if fallbackLabel == "" {
+		fallbackLabel = address
+	}
+
+	trustErr := reportPeerTrust(stdin, stdout, runtime, peerLabel, fallbackLabel, peer.Fingerprint, allowUntrusted)
+	if err := coordinateSessionAdmission(conn, true, trustErr); err != nil {
 		return err
 	}
 

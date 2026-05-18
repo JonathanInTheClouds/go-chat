@@ -85,38 +85,38 @@ ip route get 1 | awk '{print $7; exit}'
 
 **Person hosting:**
 ```bash
-chat serve -n Alice -p bob -u
+chat serve -n Alice -u
 ```
 
 **Person connecting** (replace `192.168.1.10` with the host's IP):
 ```bash
-chat connect -n Bob -p alice -u 192.168.1.10:7777
+chat connect -n Bob -u 192.168.1.10:7777
 ```
 
-`-u` (`--allow-untrusted`) is only needed the first time. It pins each other's fingerprint so future connections are verified automatically.
+`-u` (`--allow-untrusted`) is only needed the first time. It pins each other's fingerprint so future connections are verified automatically. The peer's display name is used as their trust label automatically — no need to set `--peer` unless you want a custom label.
 
 ### Step 3 — Reconnecting (after first contact)
 
 **Person hosting:**
 ```bash
-chat serve -n Alice -p bob
+chat serve -n Alice
 ```
 
 **Person connecting:**
 ```bash
-chat connect -n Bob -p alice 192.168.1.10:7777
+chat connect -n Bob 192.168.1.10:7777
 ```
 
 ### Local testing (two terminals, same machine)
 
 **Terminal 1:**
 ```bash
-chat serve -n Alice -p bob -u
+chat serve -n Alice -u
 ```
 
 **Terminal 2:**
 ```bash
-chat connect -n Bob -p alice -u localhost:7777
+chat connect -n Bob -u localhost:7777
 ```
 
 ### Connect over the internet via tunnel
@@ -125,7 +125,7 @@ No port forwarding required. The host gets a public address via [bore.pub](https
 
 **Person hosting:**
 ```bash
-chat serve -n Alice -p bob -u --tunnel
+chat serve -n Alice -u --tunnel
 ```
 
 The tunnel URL is printed on startup — share it with your peer:
@@ -133,7 +133,7 @@ The tunnel URL is printed on startup — share it with your peer:
 ```
 tunnel ready: bore.pub:12345
 share with your friend:
-  chat connect -n <name> -p <label> -u bore.pub:12345
+  chat connect -n <name> -u bore.pub:12345
 ```
 
 ### Memory-only mode (no identity or trust saved to disk)
@@ -172,7 +172,7 @@ chat completion [bash|zsh|fish|powershell]
 | Flag | Short | Description |
 |---|---|---|
 | `--name name` | `-n` | Your display name shown to the peer (defaults to system username) |
-| `--peer label` | `-p` | Label for the remote peer in the trust store |
+| `--peer label` | `-p` | Label for the remote peer in the trust store (defaults to the peer's display name) |
 | `--allow-untrusted` | `-u` | Accept first contact or a changed peer fingerprint and persist trust |
 | `--memory-only` | `-m` | Ephemeral identity, no disk state, no file transfer |
 | `--no-passphrase` | | Skip passphrase protection for the identity file |
