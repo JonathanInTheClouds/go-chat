@@ -87,6 +87,7 @@ type RuntimeOptions struct {
 	MemoryOnly     bool
 	IdentityPath   string
 	KnownPeersPath string
+	ReceiveDir     string
 	LocalName      string
 	PeerName       string
 }
@@ -170,6 +171,8 @@ func RunChat(stdin io.Reader, stdout io.Writer, session *netpkg.SecureSession, p
 	vp.KeyMap = viewport.DefaultKeyMap()
 	vp.MouseWheelEnabled = true
 
+	runtimeOptions.ReceiveDir = filepath.Join(cwd, "received")
+
 	events := make(chan tea.Msg, 16)
 	model := &chatModel{
 		runtimeOptions:   runtimeOptions,
@@ -181,7 +184,7 @@ func RunChat(stdin io.Reader, stdout io.Writer, session *netpkg.SecureSession, p
 		remoteAddress:    session.RemoteAddress(),
 		localFingerprint: session.LocalFingerprint(),
 		peerFingerprint:  peer.Fingerprint,
-		receiveDir:       filepath.Join(cwd, "received"),
+		receiveDir:       runtimeOptions.ReceiveDir,
 		banners:          initialBanners(runtimeOptions),
 		localName:        runtimeOptions.LocalName,
 		peerName:         runtimeOptions.PeerName,
@@ -641,9 +644,46 @@ func panicWipeCmd(runtimeOptions RuntimeOptions, session *netpkg.SecureSession) 
 				errs = append(errs, err)
 			}
 		}
+		if runtimeOptions.ReceiveDir != "" {
+			_ = wipeDirectory(runtimeOptions.ReceiveDir)
+		}
 
 		return panicWipeComplete{err: errors.Join(errs...)}
 	}
+}
+
+func secureDeleteFile(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	zeros := make([]byte, info.Size())
+	_, _ = f.Write(zeros)
+	_ = f.Sync()
+	_ = f.Close()
+	return os.Remove(path)
+}
+
+func wipeDirectory(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		_ = secureDeleteFile(filepath.Join(dir, entry.Name()))
+	}
+	return os.Remove(dir)
 }
 
 type SessionClosedError struct {

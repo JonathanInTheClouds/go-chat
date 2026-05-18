@@ -61,10 +61,27 @@ func Open(path string) (*Store, error) {
 }
 
 func DeleteStore(path string) error {
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := secureDelete(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("delete known peers file: %w", err)
 	}
 	return nil
+}
+
+func secureDelete(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	zeros := make([]byte, info.Size())
+	_, _ = f.Write(zeros)
+	_ = f.Sync()
+	_ = f.Close()
+	return os.Remove(path)
 }
 
 func (s *Store) Observe(label, fingerprint string, now time.Time) (Observation, error) {

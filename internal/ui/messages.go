@@ -18,6 +18,7 @@ const TrustSetNotice = "Stored peer fingerprint for %s as %s."
 const TrustRemoveNotice = "Removed stored peer fingerprint for %s."
 const TrustMissingNotice = "No stored peer fingerprint exists for %s."
 const TrustEmptyNotice = "No known peers are stored."
+const WipeReceivedMessage = "Securely wiped received files directory at %s."
 
 func Usage() string {
 	return `chat: encrypted terminal chat prototype
