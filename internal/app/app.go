@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -17,6 +16,8 @@ import (
 	tunnelpkg "chat/internal/tunnel"
 	"chat/internal/trust"
 	"chat/internal/ui"
+
+	"github.com/spf13/cobra"
 )
 
 type runtimeConfig struct {
@@ -37,60 +38,266 @@ func (e *trustBlockedError) Error() string {
 }
 
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		_, err := fmt.Fprint(stdout, ui.Usage())
-		return err
-	}
-
-	switch args[0] {
-	case "serve":
-		return runServe(args[1:], stdin, stdout)
-	case "connect":
-		return runConnect(args[1:], stdin, stdout)
-	case "genkey":
-		return runGenKey(args[1:], stdout)
-	case "fingerprint":
-		return runFingerprint(args[1:], stdout)
-	case "wipe":
-		return runWipe(args[1:], stdout)
-	case "trust":
-		return runTrust(args[1:], stdout)
-	case "help", "-h", "--help":
-		_, err := fmt.Fprint(stdout, ui.Usage())
-		return err
-	default:
-		_, _ = fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
-		_, err := fmt.Fprint(stderr, ui.Usage())
-		return err
-	}
+	root := buildRoot(stdin, stdout, stderr)
+	root.SetArgs(args)
+	return root.Execute()
 }
 
-func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
+func buildRoot(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
+	root := &cobra.Command{
+		Use:           "chat",
+		Short:         "Encrypted terminal chat",
+		Long:          "A terminal-native encrypted 1:1 chat tool.\n\nAll sessions use Noise XX with ChaCha20-Poly1305 encryption and mutual authentication.",
+		SilenceErrors: true,
+		SilenceUsage:  true,
+	}
+	root.SetOut(stdout)
+	root.SetErr(stderr)
 
-	listen := fs.String("listen", "0.0.0.0:7777", "listen address")
-	ephemeral := fs.Bool("ephemeral", false, "use a throwaway in-memory identity")
-	identityPath := fs.String("identity", "", "path to persistent identity file")
-	knownPeersPath := fs.String("known-peers", "", "path to known peers file")
-	peerLabel := fs.String("peer", "", "stable label for the remote peer")
-	allowUntrusted := fs.Bool("allow-untrusted", false, "allow first-contact or changed peer fingerprints and persist trust")
-	memoryOnly := fs.Bool("memory-only", false, "disable app-managed disk persistence for this session")
-	localName := fs.String("name", defaultName(), "your display name shown to the peer")
-	tunnel := fs.Bool("tunnel", false, "expose the server via a bore.pub tunnel")
-	if err := fs.Parse(args); err != nil {
-		return err
+	root.AddCommand(
+		newServeCmd(stdin, stdout),
+		newConnectCmd(stdin, stdout),
+		newGenKeyCmd(stdout),
+		newFingerprintCmd(stdout),
+		newWipeCmd(stdout),
+		newTrustCmd(stdout),
+		newCompletionCmd(root, stdout),
+	)
+
+	return root
+}
+
+func newServeCmd(stdin io.Reader, stdout io.Writer) *cobra.Command {
+	var (
+		listen         string
+		ephemeral      bool
+		identityPath   string
+		knownPeersPath string
+		peerLabel      string
+		allowUntrusted bool
+		memoryOnly     bool
+		localName      string
+		tunnel         bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Start a chat server and wait for a peer to connect",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runServe(stdin, stdout, listen, ephemeral, identityPath, knownPeersPath, peerLabel, allowUntrusted, memoryOnly, localName, tunnel)
+		},
 	}
 
-	runtime, err := resolveRuntimeConfig(*identityPath, *knownPeersPath, *memoryOnly)
+	cmd.Flags().StringVar(&listen, "listen", "0.0.0.0:7777", "address to listen on")
+	cmd.Flags().BoolVar(&ephemeral, "ephemeral", false, "use a throwaway in-memory identity")
+	cmd.Flags().StringVar(&identityPath, "identity", "", "path to persistent identity file")
+	cmd.Flags().StringVar(&knownPeersPath, "known-peers", "", "path to known peers file")
+	cmd.Flags().StringVar(&peerLabel, "peer", "", "stable label for the remote peer in the trust store")
+	cmd.Flags().BoolVar(&allowUntrusted, "allow-untrusted", false, "accept first contact or changed peer fingerprints and persist trust")
+	cmd.Flags().BoolVar(&memoryOnly, "memory-only", false, "disable disk persistence for this session")
+	cmd.Flags().StringVar(&localName, "name", defaultName(), "your display name shown to the peer")
+	cmd.Flags().BoolVar(&tunnel, "tunnel", false, "expose the server via a bore.pub tunnel")
+
+	return cmd
+}
+
+func newConnectCmd(stdin io.Reader, stdout io.Writer) *cobra.Command {
+	var (
+		ephemeral      bool
+		identityPath   string
+		knownPeersPath string
+		peerLabel      string
+		allowUntrusted bool
+		memoryOnly     bool
+		localName      string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "connect <host:port>",
+		Short: "Connect to a chat server",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runConnect(stdin, stdout, args[0], ephemeral, identityPath, knownPeersPath, peerLabel, allowUntrusted, memoryOnly, localName)
+		},
+	}
+
+	cmd.Flags().BoolVar(&ephemeral, "ephemeral", false, "use a throwaway in-memory identity")
+	cmd.Flags().StringVar(&identityPath, "identity", "", "path to persistent identity file")
+	cmd.Flags().StringVar(&knownPeersPath, "known-peers", "", "path to known peers file")
+	cmd.Flags().StringVar(&peerLabel, "peer", "", "stable label for the remote peer in the trust store")
+	cmd.Flags().BoolVar(&allowUntrusted, "allow-untrusted", false, "accept first contact or changed peer fingerprints and persist trust")
+	cmd.Flags().BoolVar(&memoryOnly, "memory-only", false, "disable disk persistence for this session")
+	cmd.Flags().StringVar(&localName, "name", defaultName(), "your display name shown to the peer")
+
+	return cmd
+}
+
+func newGenKeyCmd(stdout io.Writer) *cobra.Command {
+	var (
+		ephemeral    bool
+		identityPath string
+		force        bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "genkey",
+		Short: "Generate a new identity keypair",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runGenKey(stdout, ephemeral, identityPath, force)
+		},
+	}
+
+	cmd.Flags().BoolVar(&ephemeral, "ephemeral", false, "generate a throwaway in-memory identity (not saved)")
+	cmd.Flags().StringVar(&identityPath, "identity", "", "path to persistent identity file")
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing persistent identity")
+
+	return cmd
+}
+
+func newFingerprintCmd(stdout io.Writer) *cobra.Command {
+	var (
+		ephemeral    bool
+		identityPath string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "fingerprint",
+		Short: "Show your identity fingerprint",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runFingerprint(stdout, ephemeral, identityPath)
+		},
+	}
+
+	cmd.Flags().BoolVar(&ephemeral, "ephemeral", false, "show a throwaway in-memory fingerprint")
+	cmd.Flags().StringVar(&identityPath, "identity", "", "path to persistent identity file")
+
+	return cmd
+}
+
+func newWipeCmd(stdout io.Writer) *cobra.Command {
+	var identityPath string
+
+	cmd := &cobra.Command{
+		Use:   "wipe",
+		Short: "Delete your persistent identity file",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runWipe(stdout, identityPath)
+		},
+	}
+
+	cmd.Flags().StringVar(&identityPath, "identity", "", "path to persistent identity file")
+
+	return cmd
+}
+
+func newTrustCmd(stdout io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "trust",
+		Short: "Manage trusted peer fingerprints",
+	}
+
+	cmd.AddCommand(
+		newTrustListCmd(stdout),
+		newTrustSetCmd(stdout),
+		newTrustRemoveCmd(stdout),
+	)
+
+	return cmd
+}
+
+func newTrustListCmd(stdout io.Writer) *cobra.Command {
+	var knownPeersPath string
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List all trusted peers",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runTrustList(stdout, knownPeersPath)
+		},
+	}
+
+	cmd.Flags().StringVar(&knownPeersPath, "known-peers", "", "path to known peers file")
+
+	return cmd
+}
+
+func newTrustSetCmd(stdout io.Writer) *cobra.Command {
+	var knownPeersPath string
+
+	cmd := &cobra.Command{
+		Use:   "set <label> <fingerprint>",
+		Short: "Add or update a trusted peer fingerprint",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runTrustSet(stdout, knownPeersPath, args[0], args[1])
+		},
+	}
+
+	cmd.Flags().StringVar(&knownPeersPath, "known-peers", "", "path to known peers file")
+
+	return cmd
+}
+
+func newTrustRemoveCmd(stdout io.Writer) *cobra.Command {
+	var knownPeersPath string
+
+	cmd := &cobra.Command{
+		Use:   "remove <label>",
+		Short: "Remove a trusted peer",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runTrustRemove(stdout, knownPeersPath, args[0])
+		},
+	}
+
+	cmd.Flags().StringVar(&knownPeersPath, "known-peers", "", "path to known peers file")
+
+	return cmd
+}
+
+func newCompletionCmd(root *cobra.Command, stdout io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "completion [bash|zsh|fish]",
+		Short: "Generate shell completion script",
+		Long: `Generate a shell completion script and source it to enable tab completion.
+
+Bash:
+  chat completion bash > ~/.bash_completion.d/chat
+  source ~/.bash_completion.d/chat
+
+Zsh:
+  chat completion zsh > ~/.zsh/completions/_chat
+
+Fish:
+  chat completion fish > ~/.config/fish/completions/chat.fish`,
+		Args:      cobra.ExactArgs(1),
+		ValidArgs: []string{"bash", "zsh", "fish"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch args[0] {
+			case "bash":
+				return root.GenBashCompletion(stdout)
+			case "zsh":
+				return root.GenZshCompletion(stdout)
+			case "fish":
+				return root.GenFishCompletion(stdout, true)
+			default:
+				return fmt.Errorf("unsupported shell %q — use bash, zsh, or fish", args[0])
+			}
+		},
+	}
+
+	return cmd
+}
+
+// --- command implementations ---
+
+func runServe(stdin io.Reader, stdout io.Writer, listen string, ephemeral bool, identityPath, knownPeersPath, peerLabel string, allowUntrusted, memoryOnly bool, localName string, tunnel bool) error {
+	runtime, err := resolveRuntimeConfig(identityPath, knownPeersPath, memoryOnly)
 	if err != nil {
 		return err
 	}
 
-	session := netpkg.ListenerConfig{
-		ListenAddress: *listen,
-	}
-
+	session := netpkg.ListenerConfig{ListenAddress: listen}
 	if err := session.Validate(); err != nil {
 		return err
 	}
@@ -101,14 +308,11 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 	)
 	if runtime.MemoryOnly {
 		identity, modeNotice, err = resolveIdentityForMemoryOnly()
-		if err != nil {
-			return err
-		}
 	} else {
-		identity, modeNotice, err = resolveIdentity(*identityPath, *ephemeral)
-		if err != nil {
-			return err
-		}
+		identity, modeNotice, err = resolveIdentity(identityPath, ephemeral)
+	}
+	if err != nil {
+		return err
 	}
 	if _, err := fmt.Fprintln(stdout, modeNotice); err != nil {
 		return err
@@ -125,11 +329,11 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 	}
 	defer listener.Close()
 
-	if *tunnel {
+	if tunnel {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		_, portStr, err := net.SplitHostPort(*listen)
+		_, portStr, err := net.SplitHostPort(listen)
 		if err != nil {
 			return fmt.Errorf("parse listen address: %w", err)
 		}
@@ -156,7 +360,7 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 
-		trustErr := reportPeerTrust(stdout, runtime, *peerLabel, conn.RemoteAddress(), peer.Fingerprint, *allowUntrusted)
+		trustErr := reportPeerTrust(stdout, runtime, peerLabel, conn.RemoteAddress(), peer.Fingerprint, allowUntrusted)
 		if err := coordinateSessionAdmission(conn, false, trustErr); err != nil {
 			_ = conn.Close()
 			if isSessionRejected(err) {
@@ -168,7 +372,7 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 
-		peerName, err := exchangeNames(conn, false, *localName)
+		peerName, err := exchangeNames(conn, false, localName)
 		if err != nil {
 			_ = conn.Close()
 			if _, writeErr := fmt.Fprintln(stdout, "name exchange failed; returning to listener"); writeErr != nil {
@@ -181,7 +385,7 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 			MemoryOnly:     runtime.MemoryOnly,
 			IdentityPath:   runtime.IdentityPath,
 			KnownPeersPath: runtime.KnownPeersPath,
-			LocalName:      *localName,
+			LocalName:      localName,
 			PeerName:       peerName,
 		})
 		_ = conn.Close()
@@ -197,35 +401,13 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 	}
 }
 
-func runConnect(args []string, stdin io.Reader, stdout io.Writer) error {
-	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-
-	ephemeral := fs.Bool("ephemeral", false, "use a throwaway in-memory identity")
-	identityPath := fs.String("identity", "", "path to persistent identity file")
-	knownPeersPath := fs.String("known-peers", "", "path to known peers file")
-	peerLabel := fs.String("peer", "", "stable label for the remote peer")
-	allowUntrusted := fs.Bool("allow-untrusted", false, "allow first-contact or changed peer fingerprints and persist trust")
-	memoryOnly := fs.Bool("memory-only", false, "disable app-managed disk persistence for this session")
-	localName := fs.String("name", defaultName(), "your display name shown to the peer")
-
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	runtime, err := resolveRuntimeConfig(*identityPath, *knownPeersPath, *memoryOnly)
+func runConnect(stdin io.Reader, stdout io.Writer, address string, ephemeral bool, identityPath, knownPeersPath, peerLabel string, allowUntrusted, memoryOnly bool, localName string) error {
+	runtime, err := resolveRuntimeConfig(identityPath, knownPeersPath, memoryOnly)
 	if err != nil {
 		return err
 	}
 
-	if fs.NArg() != 1 {
-		return errors.New("connect requires exactly one peer address argument")
-	}
-
-	session := netpkg.DialConfig{
-		RemoteAddress: fs.Arg(0),
-	}
-
+	session := netpkg.DialConfig{RemoteAddress: address}
 	if err := session.Validate(); err != nil {
 		return err
 	}
@@ -236,14 +418,11 @@ func runConnect(args []string, stdin io.Reader, stdout io.Writer) error {
 	)
 	if runtime.MemoryOnly {
 		identity, modeNotice, err = resolveIdentityForMemoryOnly()
-		if err != nil {
-			return err
-		}
 	} else {
-		identity, modeNotice, err = resolveIdentity(*identityPath, *ephemeral)
-		if err != nil {
-			return err
-		}
+		identity, modeNotice, err = resolveIdentity(identityPath, ephemeral)
+	}
+	if err != nil {
+		return err
 	}
 	if _, err := fmt.Fprintln(stdout, modeNotice); err != nil {
 		return err
@@ -260,13 +439,12 @@ func runConnect(args []string, stdin io.Reader, stdout io.Writer) error {
 	}
 	defer conn.Close()
 
-	trustErr := reportPeerTrust(stdout, runtime, *peerLabel, session.RemoteAddress, peer.Fingerprint, *allowUntrusted)
+	trustErr := reportPeerTrust(stdout, runtime, peerLabel, address, peer.Fingerprint, allowUntrusted)
 	if err := coordinateSessionAdmission(conn, true, trustErr); err != nil {
-		_ = conn.Close()
 		return err
 	}
 
-	peerName, err := exchangeNames(conn, true, *localName)
+	peerName, err := exchangeNames(conn, true, localName)
 	if err != nil {
 		return err
 	}
@@ -275,7 +453,7 @@ func runConnect(args []string, stdin io.Reader, stdout io.Writer) error {
 		MemoryOnly:     runtime.MemoryOnly,
 		IdentityPath:   runtime.IdentityPath,
 		KnownPeersPath: runtime.KnownPeersPath,
-		LocalName:      *localName,
+		LocalName:      localName,
 		PeerName:       peerName,
 	})
 	var closedErr *ui.SessionClosedError
@@ -285,23 +463,12 @@ func runConnect(args []string, stdin io.Reader, stdout io.Writer) error {
 	return err
 }
 
-func runGenKey(args []string, stdout io.Writer) error {
-	fs := flag.NewFlagSet("genkey", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-
-	ephemeral := fs.Bool("ephemeral", false, "generate a throwaway in-memory identity")
-	identityPath := fs.String("identity", "", "path to persistent identity file")
-	force := fs.Bool("force", false, "overwrite an existing persistent identity")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	if *ephemeral {
+func runGenKey(stdout io.Writer, ephemeral bool, identityPath string, force bool) error {
+	if ephemeral {
 		identity, err := cryptopkg.GenerateIdentity()
 		if err != nil {
 			return err
 		}
-
 		_, err = fmt.Fprintf(
 			stdout,
 			"%s\ned25519 public: %x\nx25519 public: %x\nfingerprint: %s\n",
@@ -313,12 +480,12 @@ func runGenKey(args []string, stdout io.Writer) error {
 		return err
 	}
 
-	path, err := effectiveIdentityPath(*identityPath)
+	path, err := effectiveIdentityPath(identityPath)
 	if err != nil {
 		return err
 	}
 
-	if !*force {
+	if !force {
 		if _, err := cryptopkg.LoadIdentity(path); err == nil {
 			return fmt.Errorf("identity already exists at %s; rerun with --force to rotate it", path)
 		}
@@ -343,88 +510,41 @@ func runGenKey(args []string, stdout io.Writer) error {
 	return err
 }
 
-func runFingerprint(args []string, stdout io.Writer) error {
-	fs := flag.NewFlagSet("fingerprint", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-
-	ephemeral := fs.Bool("ephemeral", false, "show a throwaway in-memory fingerprint")
-	identityPath := fs.String("identity", "", "path to persistent identity file")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	identity, modeNotice, err := resolveIdentity(*identityPath, *ephemeral)
+func runFingerprint(stdout io.Writer, ephemeral bool, identityPath string) error {
+	identity, modeNotice, err := resolveIdentity(identityPath, ephemeral)
 	if err != nil {
 		return err
 	}
-
 	_, err = fmt.Fprintf(stdout, "fingerprint: %s\n%s\n", identity.Fingerprint(), modeNotice)
 	return err
 }
 
-func runWipe(args []string, stdout io.Writer) error {
-	fs := flag.NewFlagSet("wipe", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-
-	identityPath := fs.String("identity", "", "path to persistent identity file")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	path, err := effectiveIdentityPath(*identityPath)
+func runWipe(stdout io.Writer, identityPath string) error {
+	path, err := effectiveIdentityPath(identityPath)
 	if err != nil {
 		return err
 	}
 	if err := cryptopkg.DeleteIdentity(path); err != nil {
 		return err
 	}
-
 	_, err = fmt.Fprintf(stdout, ui.WipeMessage+"\n", path)
 	return err
 }
 
-func runTrust(args []string, stdout io.Writer) error {
-	if len(args) == 0 {
-		return errors.New("trust requires a subcommand: list, set, or remove")
-	}
-
-	switch args[0] {
-	case "list":
-		return runTrustList(args[1:], stdout)
-	case "set":
-		return runTrustSet(args[1:], stdout)
-	case "remove":
-		return runTrustRemove(args[1:], stdout)
-	default:
-		return fmt.Errorf("unknown trust subcommand %q", args[0])
-	}
-}
-
-func runTrustList(args []string, stdout io.Writer) error {
-	fs := flag.NewFlagSet("trust list", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-
-	knownPeersPath := fs.String("known-peers", "", "path to known peers file")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	path, err := effectiveKnownPeersPath(*knownPeersPath)
+func runTrustList(stdout io.Writer, knownPeersPath string) error {
+	path, err := effectiveKnownPeersPath(knownPeersPath)
 	if err != nil {
 		return err
 	}
-
 	store, err := openTrustStore(path)
 	if err != nil {
 		return err
 	}
-
 	entries := store.List()
 	if len(entries) == 0 {
 		_, err := fmt.Fprintln(stdout, ui.TrustEmptyNotice)
 		return err
 	}
-
 	for _, entry := range entries {
 		if _, err := fmt.Fprintf(
 			stdout,
@@ -437,65 +557,34 @@ func runTrustList(args []string, stdout io.Writer) error {
 			return err
 		}
 	}
-
 	return nil
 }
 
-func runTrustSet(args []string, stdout io.Writer) error {
-	fs := flag.NewFlagSet("trust set", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-
-	knownPeersPath := fs.String("known-peers", "", "path to known peers file")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() != 2 {
-		return errors.New("trust set requires exactly two arguments: <label> <fingerprint>")
-	}
-
-	path, err := effectiveKnownPeersPath(*knownPeersPath)
+func runTrustSet(stdout io.Writer, knownPeersPath, label, fingerprint string) error {
+	path, err := effectiveKnownPeersPath(knownPeersPath)
 	if err != nil {
 		return err
 	}
-
 	store, err := openTrustStore(path)
 	if err != nil {
 		return err
 	}
-
-	label := fs.Arg(0)
-	fingerprint := fs.Arg(1)
 	if err := store.Set(label, fingerprint, time.Now()); err != nil {
 		return err
 	}
-
 	_, err = fmt.Fprintf(stdout, ui.TrustSetNotice+"\n", label, fingerprint)
 	return err
 }
 
-func runTrustRemove(args []string, stdout io.Writer) error {
-	fs := flag.NewFlagSet("trust remove", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-
-	knownPeersPath := fs.String("known-peers", "", "path to known peers file")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return errors.New("trust remove requires exactly one argument: <label>")
-	}
-
-	path, err := effectiveKnownPeersPath(*knownPeersPath)
+func runTrustRemove(stdout io.Writer, knownPeersPath, label string) error {
+	path, err := effectiveKnownPeersPath(knownPeersPath)
 	if err != nil {
 		return err
 	}
-
 	store, err := openTrustStore(path)
 	if err != nil {
 		return err
 	}
-
-	label := fs.Arg(0)
 	removed, err := store.Remove(label)
 	if err != nil {
 		return err
@@ -504,10 +593,11 @@ func runTrustRemove(args []string, stdout io.Writer) error {
 		_, err := fmt.Fprintf(stdout, ui.TrustMissingNotice+"\n", label)
 		return err
 	}
-
 	_, err = fmt.Fprintf(stdout, ui.TrustRemoveNotice+"\n", label)
 	return err
 }
+
+// --- helpers ---
 
 func resolveIdentity(identityPath string, ephemeral bool) (*cryptopkg.Identity, string, error) {
 	if ephemeral {
@@ -564,7 +654,6 @@ func resolveRuntimeConfig(identityPath, knownPeersPath string, memoryOnly bool) 
 	if err != nil {
 		return runtimeConfig{}, err
 	}
-
 	return runtimeConfig{
 		MemoryOnly:     memoryOnly,
 		IdentityPath:   effectiveIdentity,
@@ -588,7 +677,6 @@ func reportPeerTrust(stdout io.Writer, runtime runtimeConfig, peerLabel, fallbac
 	}
 
 	label := choosePeerLabel(peerLabel, fallbackLabel)
-
 	observation, err := store.Check(label, fingerprint)
 	if err != nil {
 		return err
