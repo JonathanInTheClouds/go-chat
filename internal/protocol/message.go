@@ -15,7 +15,8 @@ const (
 	MessageTypeFileComplete  = "file_complete"
 	MessageTypeSessionAccept = "session_accept"
 	MessageTypeSessionReject = "session_reject"
-	MessageTypeTyping        = "typing"
+	MessageTypeTyping         = "typing"
+	MessageTypeHandshakeName  = "handshake_name"
 )
 
 type Message struct {
@@ -75,6 +76,10 @@ func ValidateMessage(message Message) error {
 			return errors.New("session reject requires reason text")
 		}
 	case MessageTypeTyping:
+	case MessageTypeHandshakeName:
+		if message.Text == "" {
+			return errors.New("handshake name requires text")
+		}
 	default:
 		return fmt.Errorf("unknown protocol message type %q", message.Type)
 	}

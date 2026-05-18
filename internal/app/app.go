@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os/user"
 	"time"
 
 	cryptopkg "chat/internal/crypto"
@@ -71,6 +72,7 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 	peerLabel := fs.String("peer", "", "stable label for the remote peer")
 	allowUntrusted := fs.Bool("allow-untrusted", false, "allow first-contact or changed peer fingerprints and persist trust")
 	memoryOnly := fs.Bool("memory-only", false, "disable app-managed disk persistence for this session")
+	localName := fs.String("name", defaultName(), "your display name shown to the peer")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -136,10 +138,21 @@ func runServe(args []string, stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 
+		peerName, err := exchangeNames(conn, false, *localName)
+		if err != nil {
+			_ = conn.Close()
+			if _, writeErr := fmt.Fprintln(stdout, "name exchange failed; returning to listener"); writeErr != nil {
+				return writeErr
+			}
+			continue
+		}
+
 		err = ui.RunChat(stdin, stdout, conn, peer, ui.RuntimeOptions{
 			MemoryOnly:     runtime.MemoryOnly,
 			IdentityPath:   runtime.IdentityPath,
 			KnownPeersPath: runtime.KnownPeersPath,
+			LocalName:      *localName,
+			PeerName:       peerName,
 		})
 		_ = conn.Close()
 
@@ -164,6 +177,7 @@ func runConnect(args []string, stdin io.Reader, stdout io.Writer) error {
 	peerLabel := fs.String("peer", "", "stable label for the remote peer")
 	allowUntrusted := fs.Bool("allow-untrusted", false, "allow first-contact or changed peer fingerprints and persist trust")
 	memoryOnly := fs.Bool("memory-only", false, "disable app-managed disk persistence for this session")
+	localName := fs.String("name", defaultName(), "your display name shown to the peer")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -222,10 +236,17 @@ func runConnect(args []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 
+	peerName, err := exchangeNames(conn, true, *localName)
+	if err != nil {
+		return err
+	}
+
 	err = ui.RunChat(stdin, stdout, conn, peer, ui.RuntimeOptions{
 		MemoryOnly:     runtime.MemoryOnly,
 		IdentityPath:   runtime.IdentityPath,
 		KnownPeersPath: runtime.KnownPeersPath,
+		LocalName:      *localName,
+		PeerName:       peerName,
 	})
 	var closedErr *ui.SessionClosedError
 	if errors.As(err, &closedErr) {
@@ -643,6 +664,45 @@ func evaluateAdmissionOutcome(localErr error, peerMessage protocol.Message) erro
 	default:
 		return fmt.Errorf("unexpected session admission message type %q", peerMessage.Type)
 	}
+}
+
+func defaultName() string {
+	u, err := user.Current()
+	if err != nil {
+		return "user"
+	}
+	if u.Username != "" {
+		return u.Username
+	}
+	return "user"
+}
+
+func exchangeNames(session *netpkg.SecureSession, initiator bool, localName string) (string, error) {
+	if initiator {
+		if err := session.SendName(localName); err != nil {
+			return "", fmt.Errorf("send name: %w", err)
+		}
+		msg, err := session.ReceiveMessage()
+		if err != nil {
+			return "", fmt.Errorf("receive peer name: %w", err)
+		}
+		if msg.Type != protocol.MessageTypeHandshakeName {
+			return "", fmt.Errorf("expected handshake_name, got %q", msg.Type)
+		}
+		return msg.Text, nil
+	}
+
+	msg, err := session.ReceiveMessage()
+	if err != nil {
+		return "", fmt.Errorf("receive peer name: %w", err)
+	}
+	if msg.Type != protocol.MessageTypeHandshakeName {
+		return "", fmt.Errorf("expected handshake_name, got %q", msg.Type)
+	}
+	if err := session.SendName(localName); err != nil {
+		return "", fmt.Errorf("send name: %w", err)
+	}
+	return msg.Text, nil
 }
 
 func isSessionRejected(err error) bool {

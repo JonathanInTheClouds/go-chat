@@ -23,8 +23,8 @@ func Usage() string {
 	return `chat: encrypted terminal chat prototype
 
 Usage:
-  chat serve [--listen host:port] [--ephemeral] [--identity path] [--known-peers path] [--peer label] [--allow-untrusted] [--memory-only]
-  chat connect [--ephemeral] [--identity path] [--known-peers path] [--peer label] [--allow-untrusted] [--memory-only] host:port
+  chat serve [--listen host:port] [--name name] [--ephemeral] [--identity path] [--known-peers path] [--peer label] [--allow-untrusted] [--memory-only]
+  chat connect [--name name] [--ephemeral] [--identity path] [--known-peers path] [--peer label] [--allow-untrusted] [--memory-only] host:port
   chat genkey [--identity path] [--force]
   chat genkey --ephemeral
   chat fingerprint [--ephemeral] [--identity path]

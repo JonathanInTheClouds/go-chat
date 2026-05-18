@@ -140,6 +140,13 @@ func (s *SecureSession) SendChat(message string) error {
 	})
 }
 
+func (s *SecureSession) SendName(name string) error {
+	return s.sendProtocolMessage(protocol.Message{
+		Type: protocol.MessageTypeHandshakeName,
+		Text: name,
+	})
+}
+
 func (s *SecureSession) SendTyping() error {
 	return s.sendProtocolMessage(protocol.Message{
 		Type: protocol.MessageTypeTyping,

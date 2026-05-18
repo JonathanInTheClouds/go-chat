@@ -75,12 +75,16 @@ type chatModel struct {
 	peerTyping       bool
 	peerTypingAt     time.Time
 	lastTypingSentAt time.Time
+	localName        string
+	peerName         string
 }
 
 type RuntimeOptions struct {
 	MemoryOnly     bool
 	IdentityPath   string
 	KnownPeersPath string
+	LocalName      string
+	PeerName       string
 }
 
 var (
@@ -175,6 +179,8 @@ func RunChat(stdin io.Reader, stdout io.Writer, session *netpkg.SecureSession, p
 		peerFingerprint:  peer.Fingerprint,
 		receiveDir:       filepath.Join(cwd, "received"),
 		banners:          initialBanners(runtimeOptions),
+		localName:        runtimeOptions.LocalName,
+		peerName:         runtimeOptions.PeerName,
 	}
 
 	go readLoop(session, events, model.receiveDir, runtimeOptions)
@@ -402,11 +408,17 @@ func (m *chatModel) View() string {
 
 func (m *chatModel) renderHeader(width int) string {
 	title := headerTitleStyle.Render("Encrypted Terminal Chat")
+	peerDisplay := m.peerName
+	if peerDisplay == "" {
+		peerDisplay = m.remoteAddress
+	} else {
+		peerDisplay = fmt.Sprintf("%s (%s)", m.peerName, m.remoteAddress)
+	}
 	meta := headerMetaStyle.Render(
 		fmt.Sprintf(
-			"mode  %s\nremote %s\nlocal %s\npeer  %s",
+			"mode  %s\npeer  %s\nlocal %s\ntheir key %s",
 			m.modeLabel(),
-			m.remoteAddress,
+			peerDisplay,
 			m.localFingerprint,
 			m.peerFingerprint,
 		),
@@ -522,7 +534,13 @@ func (m *chatModel) renderTranscriptContent(width int) string {
 
 func (m *chatModel) renderChatLine(line chatLine, width int) string {
 	stamp := line.timestamp.Format("15:04:05")
-	prefix := fmt.Sprintf("%s  %s", stamp, line.speaker)
+	speaker := line.speaker
+	if line.self && m.localName != "" {
+		speaker = m.localName
+	} else if !line.self && m.peerName != "" {
+		speaker = m.peerName
+	}
+	prefix := fmt.Sprintf("%s  %s", stamp, speaker)
 
 	prefixStyle := peerPrefixStyle
 	bodyStyle := peerBodyStyle
@@ -580,6 +598,8 @@ func (m *chatModel) bestEffortClear() {
 	m.remoteAddress = ""
 	m.localFingerprint = ""
 	m.peerFingerprint = ""
+	m.localName = ""
+	m.peerName = ""
 }
 
 func initialBanners(runtimeOptions RuntimeOptions) []banner {
@@ -635,7 +655,11 @@ func (m *chatModel) renderTypingIndicator(width int) string {
 	if !m.peerTyping {
 		return ""
 	}
-	return typingStyle.Width(width).Render("peer is typing...")
+	name := m.peerName
+	if name == "" {
+		name = "peer"
+	}
+	return typingStyle.Width(width).Render(name + " is typing...")
 }
 
 func clearTypingAfter(at time.Time) tea.Cmd {
