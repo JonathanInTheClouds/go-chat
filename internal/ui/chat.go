@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	cryptopkg "chat/internal/crypto"
-	netpkg "chat/internal/net"
-	"chat/internal/protocol"
-	"chat/internal/trust"
+	cryptopkg "github.com/JonathanInTheClouds/go-chat/internal/crypto"
+	netpkg "github.com/JonathanInTheClouds/go-chat/internal/net"
+	"github.com/JonathanInTheClouds/go-chat/internal/protocol"
+	"github.com/JonathanInTheClouds/go-chat/internal/trust"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"

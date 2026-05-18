@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	cryptopkg "chat/internal/crypto"
-	"chat/internal/protocol"
+	cryptopkg "github.com/JonathanInTheClouds/go-chat/internal/crypto"
+	"github.com/JonathanInTheClouds/go-chat/internal/protocol"
 
 	"github.com/flynn/noise"
 )
@@ -414,7 +414,7 @@ func runHandshake(conn stdnet.Conn, handshake *noise.HandshakeState, initiator b
 	)
 
 	if initiator {
-		if writeCipher, readCipher, err = writeHandshakeMessage(conn, handshake, []byte("chat/v1")); err != nil {
+		if writeCipher, readCipher, err = writeHandshakeMessage(conn, handshake, []byte("github.com/JonathanInTheClouds/go-chat/v1")); err != nil {
 			return nil, nil, err
 		}
 		if writeCipher == nil && readCipher == nil {
@@ -432,7 +432,7 @@ func runHandshake(conn stdnet.Conn, handshake *noise.HandshakeState, initiator b
 			return nil, nil, err
 		}
 		if writeCipher == nil && readCipher == nil {
-			if writeCipher, readCipher, err = writeHandshakeMessage(conn, handshake, []byte("chat/v1")); err != nil {
+			if writeCipher, readCipher, err = writeHandshakeMessage(conn, handshake, []byte("github.com/JonathanInTheClouds/go-chat/v1")); err != nil {
 				return nil, nil, err
 			}
 		}

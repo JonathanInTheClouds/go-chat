@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	cryptopkg "chat/internal/crypto"
-	"chat/internal/protocol"
+	cryptopkg "github.com/JonathanInTheClouds/go-chat/internal/crypto"
+	"github.com/JonathanInTheClouds/go-chat/internal/protocol"
 )
 
 func TestEstablishSessionAndExchangeMessages(t *testing.T) {
