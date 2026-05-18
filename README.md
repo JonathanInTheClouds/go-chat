@@ -73,6 +73,20 @@ go run ./cmd/chat serve --name Alice --peer bob --allow-untrusted --listen 0.0.0
 go run ./cmd/chat connect --name Bob --peer alice --allow-untrusted localhost:8888
 ```
 
+### Memory-only mode (no identity or trust saved to disk)
+
+Use this when you want a session that leaves no trace. Nothing is written to disk and file transfer is disabled. Both sides get a fresh identity every run, so `--allow-untrusted` is always required.
+
+**Person hosting:**
+```bash
+go run ./cmd/chat serve --name Alice --memory-only --allow-untrusted --listen 0.0.0.0:8888
+```
+
+**Person connecting:**
+```bash
+go run ./cmd/chat connect --name Bob --memory-only --allow-untrusted 192.168.1.10:8888
+```
+
 ## Usage
 
 ```
