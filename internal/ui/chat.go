@@ -38,6 +38,10 @@ type panicWipeComplete struct {
 	err error
 }
 
+type typingIndicator struct{}
+
+type clearTypingTick struct{ at time.Time }
+
 type chatLine struct {
 	timestamp time.Time
 	speaker   string
@@ -68,6 +72,9 @@ type chatModel struct {
 	peerFingerprint  string
 	receiveDir       string
 	exitErr          error
+	peerTyping       bool
+	peerTypingAt     time.Time
+	lastTypingSentAt time.Time
 }
 
 type RuntimeOptions struct {
@@ -132,6 +139,11 @@ var (
 			Foreground(lipgloss.Color("229")).
 			Background(lipgloss.Color("62")).
 			Padding(0, 1)
+
+	typingStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("243")).
+			Italic(true).
+			Padding(0, 1)
 )
 
 func RunChat(stdin io.Reader, stdout io.Writer, session *netpkg.SecureSession, peer netpkg.PeerIdentity, runtimeOptions RuntimeOptions) error {
@@ -192,6 +204,8 @@ func readLoop(session *netpkg.SecureSession, events chan<- tea.Msg, receiveDir s
 		switch message.Type {
 		case protocol.MessageTypeChat:
 			events <- incomingMessage{body: message.Text}
+		case protocol.MessageTypeTyping:
+			events <- typingIndicator{}
 		case protocol.MessageTypeFileStart:
 			if runtimeOptions.MemoryOnly {
 				_ = session.Close()
@@ -296,7 +310,19 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshTranscript(true)
 			return m, nil
 		}
+	case typingIndicator:
+		m.peerTyping = true
+		m.peerTypingAt = time.Now()
+		m.reflow()
+		return m, tea.Batch(waitForEvent(m.events), clearTypingAfter(m.peerTypingAt))
+	case clearTypingTick:
+		if msg.at.Equal(m.peerTypingAt) {
+			m.peerTyping = false
+			m.reflow()
+		}
+		return m, nil
 	case incomingMessage:
+		m.peerTyping = false
 		m.lines = append(m.lines, chatLine{
 			timestamp: time.Now(),
 			speaker:   "peer",
@@ -331,6 +357,13 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
 
+	if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyRunes {
+		if !m.disconnected && !m.quitting && time.Since(m.lastTypingSentAt) > 2*time.Second {
+			m.lastTypingSentAt = time.Now()
+			cmds = append(cmds, sendTypingCmd(m.session))
+		}
+	}
+
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
 
@@ -356,7 +389,11 @@ func (m *chatModel) View() string {
 	if banners != "" {
 		sections = append(sections, banners)
 	}
-	sections = append(sections, transcript, input, status)
+	sections = append(sections, transcript)
+	if typing := m.renderTypingIndicator(contentWidth); typing != "" {
+		sections = append(sections, typing)
+	}
+	sections = append(sections, input, status)
 
 	return appStyle.Width(m.width).Height(m.height).Render(
 		lipgloss.JoinVertical(lipgloss.Left, sections...),
@@ -440,7 +477,11 @@ func (m *chatModel) reflow() {
 	inputHeight := lipgloss.Height(m.renderInput(contentWidth))
 	statusHeight := lipgloss.Height(m.renderStatusBar(contentWidth))
 
-	transcriptHeight := m.height - 2 - headerHeight - bannersHeight - inputHeight - statusHeight - 1
+	var typingHeight int
+	if m.peerTyping {
+		typingHeight = lipgloss.Height(m.renderTypingIndicator(contentWidth))
+	}
+	transcriptHeight := m.height - 2 - headerHeight - bannersHeight - typingHeight - inputHeight - statusHeight - 1
 	if transcriptHeight < 8 {
 		transcriptHeight = 8
 	}
@@ -588,6 +629,27 @@ func (e *SessionClosedError) Unwrap() error {
 		return nil
 	}
 	return e.Cause
+}
+
+func (m *chatModel) renderTypingIndicator(width int) string {
+	if !m.peerTyping {
+		return ""
+	}
+	return typingStyle.Width(width).Render("peer is typing...")
+}
+
+func clearTypingAfter(at time.Time) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(3 * time.Second)
+		return clearTypingTick{at: at}
+	}
+}
+
+func sendTypingCmd(session *netpkg.SecureSession) tea.Cmd {
+	return func() tea.Msg {
+		_ = session.SendTyping()
+		return nil
+	}
 }
 
 func indentBlock(value, prefix string) string {

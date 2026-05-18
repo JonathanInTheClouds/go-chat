@@ -140,6 +140,12 @@ func (s *SecureSession) SendChat(message string) error {
 	})
 }
 
+func (s *SecureSession) SendTyping() error {
+	return s.sendProtocolMessage(protocol.Message{
+		Type: protocol.MessageTypeTyping,
+	})
+}
+
 func (s *SecureSession) SendSessionAccept() error {
 	return s.sendProtocolMessage(protocol.Message{
 		Type: protocol.MessageTypeSessionAccept,

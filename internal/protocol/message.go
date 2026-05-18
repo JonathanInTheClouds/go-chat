@@ -15,6 +15,7 @@ const (
 	MessageTypeFileComplete  = "file_complete"
 	MessageTypeSessionAccept = "session_accept"
 	MessageTypeSessionReject = "session_reject"
+	MessageTypeTyping        = "typing"
 )
 
 type Message struct {
@@ -73,6 +74,7 @@ func ValidateMessage(message Message) error {
 		if message.Text == "" {
 			return errors.New("session reject requires reason text")
 		}
+	case MessageTypeTyping:
 	default:
 		return fmt.Errorf("unknown protocol message type %q", message.Type)
 	}
