@@ -21,6 +21,7 @@ import (
 	"github.com/JonathanInTheClouds/go-chat/internal/ui"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 type runtimeConfig struct {
@@ -91,6 +92,7 @@ func newServeCmd(stdin io.Reader, stdout io.Writer, g *globals) *cobra.Command {
 		peerLabel      string
 		allowUntrusted bool
 		memoryOnly     bool
+		noPassphrase   bool
 		localName      string
 		tunnel         bool
 	)
@@ -99,7 +101,7 @@ func newServeCmd(stdin io.Reader, stdout io.Writer, g *globals) *cobra.Command {
 		Use:   "serve",
 		Short: "Start a chat server and wait for a peer to connect",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServe(stdin, stdout, listen, g.IdentityPath, g.KnownPeersPath, peerLabel, allowUntrusted, memoryOnly, localName, tunnel)
+			return runServe(stdin, stdout, listen, g.IdentityPath, g.KnownPeersPath, peerLabel, allowUntrusted, memoryOnly, noPassphrase, localName, tunnel)
 		},
 	}
 
@@ -107,6 +109,7 @@ func newServeCmd(stdin io.Reader, stdout io.Writer, g *globals) *cobra.Command {
 	cmd.Flags().StringVarP(&peerLabel, "peer", "p", "", "label for the remote peer in the trust store")
 	cmd.Flags().BoolVarP(&allowUntrusted, "allow-untrusted", "u", false, "accept first contact or changed peer fingerprints")
 	cmd.Flags().BoolVarP(&memoryOnly, "memory-only", "m", false, "ephemeral identity, no disk state, no file transfer")
+	cmd.Flags().BoolVar(&noPassphrase, "no-passphrase", false, "skip passphrase protection for the identity file")
 	cmd.Flags().StringVarP(&localName, "name", "n", defaultName(), "your display name shown to the peer")
 	cmd.Flags().BoolVar(&tunnel, "tunnel", false, "expose the server via a bore.pub tunnel")
 
@@ -118,6 +121,7 @@ func newConnectCmd(stdin io.Reader, stdout io.Writer, g *globals) *cobra.Command
 		peerLabel      string
 		allowUntrusted bool
 		memoryOnly     bool
+		noPassphrase   bool
 		localName      string
 	)
 
@@ -126,13 +130,14 @@ func newConnectCmd(stdin io.Reader, stdout io.Writer, g *globals) *cobra.Command
 		Short: "Connect to a chat server",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConnect(stdin, stdout, args[0], g.IdentityPath, g.KnownPeersPath, peerLabel, allowUntrusted, memoryOnly, localName)
+			return runConnect(stdin, stdout, args[0], g.IdentityPath, g.KnownPeersPath, peerLabel, allowUntrusted, memoryOnly, noPassphrase, localName)
 		},
 	}
 
 	cmd.Flags().StringVarP(&peerLabel, "peer", "p", "", "label for the remote peer in the trust store")
 	cmd.Flags().BoolVarP(&allowUntrusted, "allow-untrusted", "u", false, "accept first contact or changed peer fingerprints")
 	cmd.Flags().BoolVarP(&memoryOnly, "memory-only", "m", false, "ephemeral identity, no disk state, no file transfer")
+	cmd.Flags().BoolVar(&noPassphrase, "no-passphrase", false, "skip passphrase protection for the identity file")
 	cmd.Flags().StringVarP(&localName, "name", "n", defaultName(), "your display name shown to the peer")
 
 	return cmd
@@ -140,52 +145,62 @@ func newConnectCmd(stdin io.Reader, stdout io.Writer, g *globals) *cobra.Command
 
 func newGenKeyCmd(stdout io.Writer, g *globals) *cobra.Command {
 	var (
-		ephemeral bool
-		force     bool
+		ephemeral    bool
+		force        bool
+		noPassphrase bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "genkey",
 		Short: "Generate a new identity keypair",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runGenKey(stdout, ephemeral, g.IdentityPath, force)
+			return runGenKey(stdout, ephemeral, noPassphrase, g.IdentityPath, force)
 		},
 	}
 
 	cmd.Flags().BoolVar(&ephemeral, "ephemeral", false, "generate a throwaway in-memory identity (not saved)")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing persistent identity")
+	cmd.Flags().BoolVar(&noPassphrase, "no-passphrase", false, "save the identity without passphrase protection")
 
 	return cmd
 }
 
 func newFingerprintCmd(stdout io.Writer, g *globals) *cobra.Command {
-	var ephemeral bool
+	var (
+		ephemeral    bool
+		noPassphrase bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "fingerprint",
 		Short: "Show your identity fingerprint",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runFingerprint(stdout, ephemeral, g.IdentityPath)
+			return runFingerprint(stdout, ephemeral, noPassphrase, g.IdentityPath)
 		},
 	}
 
 	cmd.Flags().BoolVar(&ephemeral, "ephemeral", false, "show a throwaway in-memory fingerprint")
+	cmd.Flags().BoolVar(&noPassphrase, "no-passphrase", false, "skip passphrase prompt (only works with unencrypted identity files)")
 
 	return cmd
 }
 
 func newWipeCmd(stdout io.Writer, g *globals) *cobra.Command {
-	var peers bool
+	var (
+		peers    bool
+		received bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "wipe",
 		Short: "Delete your persistent identity and optionally trust store",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runWipe(stdout, g.IdentityPath, g.KnownPeersPath, peers)
+			return runWipe(stdout, g.IdentityPath, g.KnownPeersPath, peers, received)
 		},
 	}
 
 	cmd.Flags().BoolVar(&peers, "peers", false, "also delete the known peers trust store")
+	cmd.Flags().BoolVar(&received, "received", false, "also securely wipe the received/ directory")
 
 	return cmd
 }
@@ -297,7 +312,7 @@ func detectShell() string {
 
 // --- command implementations ---
 
-func runServe(stdin io.Reader, stdout io.Writer, listen, identityPath, knownPeersPath, peerLabel string, allowUntrusted, memoryOnly bool, localName string, tunnel bool) error {
+func runServe(stdin io.Reader, stdout io.Writer, listen, identityPath, knownPeersPath, peerLabel string, allowUntrusted, memoryOnly, noPassphrase bool, localName string, tunnel bool) error {
 	runtime, err := resolveRuntimeConfig(identityPath, knownPeersPath, memoryOnly)
 	if err != nil {
 		return err
@@ -315,7 +330,7 @@ func runServe(stdin io.Reader, stdout io.Writer, listen, identityPath, knownPeer
 	if runtime.MemoryOnly {
 		identity, modeNotice, err = resolveIdentityForMemoryOnly()
 	} else {
-		identity, modeNotice, err = resolveIdentity(identityPath, false)
+		identity, modeNotice, err = resolveIdentity(identityPath, false, noPassphrase, stdout)
 	}
 	if err != nil {
 		return err
@@ -360,10 +375,30 @@ func runServe(stdin io.Reader, stdout io.Writer, listen, identityPath, knownPeer
 		}
 	}
 
+	const rateLimitWindow = 2 * time.Second
+	ipLastSeen := make(map[string]time.Time)
+
 	for {
 		conn, peer, err := listener.Accept(identity, stdout)
 		if err != nil {
 			return err
+		}
+
+		now := time.Now()
+		// prune stale entries to prevent unbounded map growth
+		for ip, t := range ipLastSeen {
+			if now.Sub(t) > 60*time.Second {
+				delete(ipLastSeen, ip)
+			}
+		}
+		remoteIP, _, splitErr := net.SplitHostPort(conn.RemoteAddress())
+		if splitErr == nil {
+			if now.Sub(ipLastSeen[remoteIP]) < rateLimitWindow {
+				_, _ = fmt.Fprintf(stdout, "rate-limited connection from %s; dropping\n", remoteIP)
+				_ = conn.Close()
+				continue
+			}
+			ipLastSeen[remoteIP] = now
 		}
 
 		trustErr := reportPeerTrust(stdin, stdout, runtime, peerLabel, conn.RemoteAddress(), peer.Fingerprint, allowUntrusted)
@@ -407,7 +442,7 @@ func runServe(stdin io.Reader, stdout io.Writer, listen, identityPath, knownPeer
 	}
 }
 
-func runConnect(stdin io.Reader, stdout io.Writer, address, identityPath, knownPeersPath, peerLabel string, allowUntrusted, memoryOnly bool, localName string) error {
+func runConnect(stdin io.Reader, stdout io.Writer, address, identityPath, knownPeersPath, peerLabel string, allowUntrusted, memoryOnly, noPassphrase bool, localName string) error {
 	runtime, err := resolveRuntimeConfig(identityPath, knownPeersPath, memoryOnly)
 	if err != nil {
 		return err
@@ -425,7 +460,7 @@ func runConnect(stdin io.Reader, stdout io.Writer, address, identityPath, knownP
 	if runtime.MemoryOnly {
 		identity, modeNotice, err = resolveIdentityForMemoryOnly()
 	} else {
-		identity, modeNotice, err = resolveIdentity(identityPath, false)
+		identity, modeNotice, err = resolveIdentity(identityPath, false, noPassphrase, stdout)
 	}
 	if err != nil {
 		return err
@@ -469,7 +504,7 @@ func runConnect(stdin io.Reader, stdout io.Writer, address, identityPath, knownP
 	return err
 }
 
-func runGenKey(stdout io.Writer, ephemeral bool, identityPath string, force bool) error {
+func runGenKey(stdout io.Writer, ephemeral, noPassphrase bool, identityPath string, force bool) error {
 	if ephemeral {
 		identity, err := cryptopkg.GenerateIdentity()
 		if err != nil {
@@ -492,7 +527,7 @@ func runGenKey(stdout io.Writer, ephemeral bool, identityPath string, force bool
 	}
 
 	if !force {
-		if _, err := cryptopkg.LoadIdentity(path); err == nil {
+		if _, err := cryptopkg.LoadIdentity(path, nil); err == nil {
 			return fmt.Errorf("identity already exists at %s; rerun with --force to rotate it", path)
 		}
 	}
@@ -501,8 +536,24 @@ func runGenKey(stdout io.Writer, ephemeral bool, identityPath string, force bool
 	if err != nil {
 		return err
 	}
-	if err := cryptopkg.SaveIdentity(path, identity); err != nil {
-		return err
+
+	if noPassphrase {
+		if err := cryptopkg.SaveIdentity(path, identity); err != nil {
+			return err
+		}
+	} else {
+		passphrase, err := promptNewPassphrase(stdout)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			for i := range passphrase {
+				passphrase[i] = 0
+			}
+		}()
+		if err := cryptopkg.SaveEncryptedIdentity(path, identity, passphrase); err != nil {
+			return err
+		}
 	}
 
 	_, err = fmt.Fprintf(
@@ -516,8 +567,8 @@ func runGenKey(stdout io.Writer, ephemeral bool, identityPath string, force bool
 	return err
 }
 
-func runFingerprint(stdout io.Writer, ephemeral bool, identityPath string) error {
-	identity, modeNotice, err := resolveIdentity(identityPath, ephemeral)
+func runFingerprint(stdout io.Writer, ephemeral, noPassphrase bool, identityPath string) error {
+	identity, modeNotice, err := resolveIdentity(identityPath, ephemeral, noPassphrase, stdout)
 	if err != nil {
 		return err
 	}
@@ -525,7 +576,7 @@ func runFingerprint(stdout io.Writer, ephemeral bool, identityPath string) error
 	return err
 }
 
-func runWipe(stdout io.Writer, identityPath, knownPeersPath string, peers bool) error {
+func runWipe(stdout io.Writer, identityPath, knownPeersPath string, peers, received bool) error {
 	path, err := effectiveIdentityPath(identityPath)
 	if err != nil {
 		return err
@@ -544,8 +595,22 @@ func runWipe(stdout io.Writer, identityPath, knownPeersPath string, peers bool) 
 		if err := trust.DeleteStore(peersPath); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(stdout, "Removed known peers store at %s.\n", peersPath)
-		return err
+		if _, err := fmt.Fprintf(stdout, "Removed known peers store at %s.\n", peersPath); err != nil {
+			return err
+		}
+	}
+	if received {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("resolve working directory: %w", err)
+		}
+		receivedDir := filepath.Join(cwd, "received")
+		if err := wipeDirectory(receivedDir); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(stdout, ui.WipeReceivedMessage+"\n", receivedDir); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -618,7 +683,7 @@ func runTrustRemove(stdout io.Writer, knownPeersPath, label string) error {
 
 // --- helpers ---
 
-func resolveIdentity(identityPath string, ephemeral bool) (*cryptopkg.Identity, string, error) {
+func resolveIdentity(identityPath string, ephemeral, noPassphrase bool, stdout io.Writer) (*cryptopkg.Identity, string, error) {
 	if ephemeral {
 		identity, err := cryptopkg.GenerateIdentity()
 		if err != nil {
@@ -632,7 +697,37 @@ func resolveIdentity(identityPath string, ephemeral bool) (*cryptopkg.Identity, 
 		return nil, "", err
 	}
 
-	identity, created, err := cryptopkg.LoadOrCreateIdentity(path)
+	var passphrase []byte
+	defer func() {
+		for i := range passphrase {
+			passphrase[i] = 0
+		}
+	}()
+
+	if !noPassphrase {
+		_, statErr := os.Stat(path)
+		fileExists := statErr == nil
+
+		if fileExists {
+			encrypted, probeErr := cryptopkg.IsEncryptedIdentity(path)
+			if probeErr != nil {
+				return nil, "", probeErr
+			}
+			if encrypted {
+				passphrase, err = promptPassphrase("identity passphrase: ", stdout)
+				if err != nil {
+					return nil, "", err
+				}
+			}
+		} else {
+			passphrase, err = promptNewPassphrase(stdout)
+			if err != nil {
+				return nil, "", err
+			}
+		}
+	}
+
+	identity, created, err := cryptopkg.LoadOrCreateIdentity(path, passphrase)
 	if err != nil {
 		return nil, "", err
 	}
@@ -640,6 +735,79 @@ func resolveIdentity(identityPath string, ephemeral bool) (*cryptopkg.Identity, 
 		return identity, fmt.Sprintf(ui.PersistentIdentityCreatedNotice, path), nil
 	}
 	return identity, fmt.Sprintf(ui.PersistentIdentityLoadedNotice, path), nil
+}
+
+func promptPassphrase(prompt string, w io.Writer) ([]byte, error) {
+	_, _ = fmt.Fprint(w, prompt)
+	passphrase, err := term.ReadPassword(int(os.Stdin.Fd()))
+	_, _ = fmt.Fprintln(w)
+	if err != nil {
+		return nil, fmt.Errorf("read passphrase: %w", err)
+	}
+	return passphrase, nil
+}
+
+func promptNewPassphrase(w io.Writer) ([]byte, error) {
+	first, err := promptPassphrase("new identity passphrase (leave blank to skip encryption): ", w)
+	if err != nil {
+		return nil, err
+	}
+	if len(first) == 0 {
+		return nil, nil
+	}
+	second, err := promptPassphrase("confirm passphrase: ", w)
+	if err != nil {
+		for i := range first {
+			first[i] = 0
+		}
+		return nil, err
+	}
+	defer func() {
+		for i := range second {
+			second[i] = 0
+		}
+	}()
+	if string(first) != string(second) {
+		for i := range first {
+			first[i] = 0
+		}
+		return nil, fmt.Errorf("passphrases do not match")
+	}
+	return first, nil
+}
+
+func secureDeleteFile(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	zeros := make([]byte, info.Size())
+	_, _ = f.Write(zeros)
+	_ = f.Sync()
+	_ = f.Close()
+	return os.Remove(path)
+}
+
+func wipeDirectory(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read directory %s: %w", dir, err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		_ = secureDeleteFile(filepath.Join(dir, entry.Name()))
+	}
+	return os.Remove(dir)
 }
 
 func resolveIdentityForMemoryOnly() (*cryptopkg.Identity, string, error) {
