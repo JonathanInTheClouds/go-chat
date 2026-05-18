@@ -45,7 +45,15 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	return root.Execute()
 }
 
+// globals holds flags that apply across multiple commands.
+type globals struct {
+	IdentityPath   string
+	KnownPeersPath string
+}
+
 func buildRoot(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
+	g := &globals{}
+
 	root := &cobra.Command{
 		Use:           "chat",
 		Short:         "Encrypted terminal chat",
@@ -56,25 +64,29 @@ func buildRoot(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 
+	// These override the default paths and are rarely needed, so keep them
+	// persistent (available to all subcommands) but out of the default help.
+	root.PersistentFlags().StringVar(&g.IdentityPath, "identity", "", "path to persistent identity file")
+	root.PersistentFlags().StringVar(&g.KnownPeersPath, "known-peers", "", "path to known peers file")
+	_ = root.PersistentFlags().MarkHidden("identity")
+	_ = root.PersistentFlags().MarkHidden("known-peers")
+
 	root.AddCommand(
-		newServeCmd(stdin, stdout),
-		newConnectCmd(stdin, stdout),
-		newGenKeyCmd(stdout),
-		newFingerprintCmd(stdout),
-		newWipeCmd(stdout),
-		newTrustCmd(stdout),
+		newServeCmd(stdin, stdout, g),
+		newConnectCmd(stdin, stdout, g),
+		newGenKeyCmd(stdout, g),
+		newFingerprintCmd(stdout, g),
+		newWipeCmd(stdout, g),
+		newTrustCmd(stdout, g),
 		newCompletionCmd(root, stdout),
 	)
 
 	return root
 }
 
-func newServeCmd(stdin io.Reader, stdout io.Writer) *cobra.Command {
+func newServeCmd(stdin io.Reader, stdout io.Writer, g *globals) *cobra.Command {
 	var (
 		listen         string
-		ephemeral      bool
-		identityPath   string
-		knownPeersPath string
 		peerLabel      string
 		allowUntrusted bool
 		memoryOnly     bool
@@ -86,28 +98,22 @@ func newServeCmd(stdin io.Reader, stdout io.Writer) *cobra.Command {
 		Use:   "serve",
 		Short: "Start a chat server and wait for a peer to connect",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServe(stdin, stdout, listen, ephemeral, identityPath, knownPeersPath, peerLabel, allowUntrusted, memoryOnly, localName, tunnel)
+			return runServe(stdin, stdout, listen, g.IdentityPath, g.KnownPeersPath, peerLabel, allowUntrusted, memoryOnly, localName, tunnel)
 		},
 	}
 
 	cmd.Flags().StringVar(&listen, "listen", "0.0.0.0:7777", "address to listen on")
-	cmd.Flags().BoolVar(&ephemeral, "ephemeral", false, "use a throwaway in-memory identity")
-	cmd.Flags().StringVar(&identityPath, "identity", "", "path to persistent identity file")
-	cmd.Flags().StringVar(&knownPeersPath, "known-peers", "", "path to known peers file")
-	cmd.Flags().StringVar(&peerLabel, "peer", "", "stable label for the remote peer in the trust store")
-	cmd.Flags().BoolVar(&allowUntrusted, "allow-untrusted", false, "accept first contact or changed peer fingerprints and persist trust")
-	cmd.Flags().BoolVar(&memoryOnly, "memory-only", false, "disable disk persistence for this session")
-	cmd.Flags().StringVar(&localName, "name", defaultName(), "your display name shown to the peer")
+	cmd.Flags().StringVarP(&peerLabel, "peer", "p", "", "label for the remote peer in the trust store")
+	cmd.Flags().BoolVarP(&allowUntrusted, "allow-untrusted", "u", false, "accept first contact or changed peer fingerprints")
+	cmd.Flags().BoolVarP(&memoryOnly, "memory-only", "m", false, "ephemeral identity, no disk state, no file transfer")
+	cmd.Flags().StringVarP(&localName, "name", "n", defaultName(), "your display name shown to the peer")
 	cmd.Flags().BoolVar(&tunnel, "tunnel", false, "expose the server via a bore.pub tunnel")
 
 	return cmd
 }
 
-func newConnectCmd(stdin io.Reader, stdout io.Writer) *cobra.Command {
+func newConnectCmd(stdin io.Reader, stdout io.Writer, g *globals) *cobra.Command {
 	var (
-		ephemeral      bool
-		identityPath   string
-		knownPeersPath string
 		peerLabel      string
 		allowUntrusted bool
 		memoryOnly     bool
@@ -119,142 +125,115 @@ func newConnectCmd(stdin io.Reader, stdout io.Writer) *cobra.Command {
 		Short: "Connect to a chat server",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConnect(stdin, stdout, args[0], ephemeral, identityPath, knownPeersPath, peerLabel, allowUntrusted, memoryOnly, localName)
+			return runConnect(stdin, stdout, args[0], g.IdentityPath, g.KnownPeersPath, peerLabel, allowUntrusted, memoryOnly, localName)
 		},
 	}
 
-	cmd.Flags().BoolVar(&ephemeral, "ephemeral", false, "use a throwaway in-memory identity")
-	cmd.Flags().StringVar(&identityPath, "identity", "", "path to persistent identity file")
-	cmd.Flags().StringVar(&knownPeersPath, "known-peers", "", "path to known peers file")
-	cmd.Flags().StringVar(&peerLabel, "peer", "", "stable label for the remote peer in the trust store")
-	cmd.Flags().BoolVar(&allowUntrusted, "allow-untrusted", false, "accept first contact or changed peer fingerprints and persist trust")
-	cmd.Flags().BoolVar(&memoryOnly, "memory-only", false, "disable disk persistence for this session")
-	cmd.Flags().StringVar(&localName, "name", defaultName(), "your display name shown to the peer")
+	cmd.Flags().StringVarP(&peerLabel, "peer", "p", "", "label for the remote peer in the trust store")
+	cmd.Flags().BoolVarP(&allowUntrusted, "allow-untrusted", "u", false, "accept first contact or changed peer fingerprints")
+	cmd.Flags().BoolVarP(&memoryOnly, "memory-only", "m", false, "ephemeral identity, no disk state, no file transfer")
+	cmd.Flags().StringVarP(&localName, "name", "n", defaultName(), "your display name shown to the peer")
 
 	return cmd
 }
 
-func newGenKeyCmd(stdout io.Writer) *cobra.Command {
+func newGenKeyCmd(stdout io.Writer, g *globals) *cobra.Command {
 	var (
-		ephemeral    bool
-		identityPath string
-		force        bool
+		ephemeral bool
+		force     bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "genkey",
 		Short: "Generate a new identity keypair",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runGenKey(stdout, ephemeral, identityPath, force)
+			return runGenKey(stdout, ephemeral, g.IdentityPath, force)
 		},
 	}
 
 	cmd.Flags().BoolVar(&ephemeral, "ephemeral", false, "generate a throwaway in-memory identity (not saved)")
-	cmd.Flags().StringVar(&identityPath, "identity", "", "path to persistent identity file")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing persistent identity")
 
 	return cmd
 }
 
-func newFingerprintCmd(stdout io.Writer) *cobra.Command {
-	var (
-		ephemeral    bool
-		identityPath string
-	)
+func newFingerprintCmd(stdout io.Writer, g *globals) *cobra.Command {
+	var ephemeral bool
 
 	cmd := &cobra.Command{
 		Use:   "fingerprint",
 		Short: "Show your identity fingerprint",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runFingerprint(stdout, ephemeral, identityPath)
+			return runFingerprint(stdout, ephemeral, g.IdentityPath)
 		},
 	}
 
 	cmd.Flags().BoolVar(&ephemeral, "ephemeral", false, "show a throwaway in-memory fingerprint")
-	cmd.Flags().StringVar(&identityPath, "identity", "", "path to persistent identity file")
 
 	return cmd
 }
 
-func newWipeCmd(stdout io.Writer) *cobra.Command {
-	var identityPath string
+func newWipeCmd(stdout io.Writer, g *globals) *cobra.Command {
+	var peers bool
 
 	cmd := &cobra.Command{
 		Use:   "wipe",
-		Short: "Delete your persistent identity file",
+		Short: "Delete your persistent identity and optionally trust store",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runWipe(stdout, identityPath)
+			return runWipe(stdout, g.IdentityPath, g.KnownPeersPath, peers)
 		},
 	}
 
-	cmd.Flags().StringVar(&identityPath, "identity", "", "path to persistent identity file")
+	cmd.Flags().BoolVar(&peers, "peers", false, "also delete the known peers trust store")
 
 	return cmd
 }
 
-func newTrustCmd(stdout io.Writer) *cobra.Command {
+func newTrustCmd(stdout io.Writer, g *globals) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "trust",
 		Short: "Manage trusted peer fingerprints",
 	}
 
 	cmd.AddCommand(
-		newTrustListCmd(stdout),
-		newTrustSetCmd(stdout),
-		newTrustRemoveCmd(stdout),
+		newTrustListCmd(stdout, g),
+		newTrustSetCmd(stdout, g),
+		newTrustRemoveCmd(stdout, g),
 	)
 
 	return cmd
 }
 
-func newTrustListCmd(stdout io.Writer) *cobra.Command {
-	var knownPeersPath string
-
-	cmd := &cobra.Command{
+func newTrustListCmd(stdout io.Writer, g *globals) *cobra.Command {
+	return &cobra.Command{
 		Use:   "list",
 		Short: "List all trusted peers",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTrustList(stdout, knownPeersPath)
+			return runTrustList(stdout, g.KnownPeersPath)
 		},
 	}
-
-	cmd.Flags().StringVar(&knownPeersPath, "known-peers", "", "path to known peers file")
-
-	return cmd
 }
 
-func newTrustSetCmd(stdout io.Writer) *cobra.Command {
-	var knownPeersPath string
-
-	cmd := &cobra.Command{
+func newTrustSetCmd(stdout io.Writer, g *globals) *cobra.Command {
+	return &cobra.Command{
 		Use:   "set <label> <fingerprint>",
 		Short: "Add or update a trusted peer fingerprint",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTrustSet(stdout, knownPeersPath, args[0], args[1])
+			return runTrustSet(stdout, g.KnownPeersPath, args[0], args[1])
 		},
 	}
-
-	cmd.Flags().StringVar(&knownPeersPath, "known-peers", "", "path to known peers file")
-
-	return cmd
 }
 
-func newTrustRemoveCmd(stdout io.Writer) *cobra.Command {
-	var knownPeersPath string
-
-	cmd := &cobra.Command{
+func newTrustRemoveCmd(stdout io.Writer, g *globals) *cobra.Command {
+	return &cobra.Command{
 		Use:   "remove <label>",
 		Short: "Remove a trusted peer",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTrustRemove(stdout, knownPeersPath, args[0])
+			return runTrustRemove(stdout, g.KnownPeersPath, args[0])
 		},
 	}
-
-	cmd.Flags().StringVar(&knownPeersPath, "known-peers", "", "path to known peers file")
-
-	return cmd
 }
 
 func newCompletionCmd(root *cobra.Command, stdout io.Writer) *cobra.Command {
@@ -317,7 +296,7 @@ func detectShell() string {
 
 // --- command implementations ---
 
-func runServe(stdin io.Reader, stdout io.Writer, listen string, ephemeral bool, identityPath, knownPeersPath, peerLabel string, allowUntrusted, memoryOnly bool, localName string, tunnel bool) error {
+func runServe(stdin io.Reader, stdout io.Writer, listen, identityPath, knownPeersPath, peerLabel string, allowUntrusted, memoryOnly bool, localName string, tunnel bool) error {
 	runtime, err := resolveRuntimeConfig(identityPath, knownPeersPath, memoryOnly)
 	if err != nil {
 		return err
@@ -335,7 +314,7 @@ func runServe(stdin io.Reader, stdout io.Writer, listen string, ephemeral bool, 
 	if runtime.MemoryOnly {
 		identity, modeNotice, err = resolveIdentityForMemoryOnly()
 	} else {
-		identity, modeNotice, err = resolveIdentity(identityPath, ephemeral)
+		identity, modeNotice, err = resolveIdentity(identityPath, false)
 	}
 	if err != nil {
 		return err
@@ -427,7 +406,7 @@ func runServe(stdin io.Reader, stdout io.Writer, listen string, ephemeral bool, 
 	}
 }
 
-func runConnect(stdin io.Reader, stdout io.Writer, address string, ephemeral bool, identityPath, knownPeersPath, peerLabel string, allowUntrusted, memoryOnly bool, localName string) error {
+func runConnect(stdin io.Reader, stdout io.Writer, address, identityPath, knownPeersPath, peerLabel string, allowUntrusted, memoryOnly bool, localName string) error {
 	runtime, err := resolveRuntimeConfig(identityPath, knownPeersPath, memoryOnly)
 	if err != nil {
 		return err
@@ -445,7 +424,7 @@ func runConnect(stdin io.Reader, stdout io.Writer, address string, ephemeral boo
 	if runtime.MemoryOnly {
 		identity, modeNotice, err = resolveIdentityForMemoryOnly()
 	} else {
-		identity, modeNotice, err = resolveIdentity(identityPath, ephemeral)
+		identity, modeNotice, err = resolveIdentity(identityPath, false)
 	}
 	if err != nil {
 		return err
@@ -545,7 +524,7 @@ func runFingerprint(stdout io.Writer, ephemeral bool, identityPath string) error
 	return err
 }
 
-func runWipe(stdout io.Writer, identityPath string) error {
+func runWipe(stdout io.Writer, identityPath, knownPeersPath string, peers bool) error {
 	path, err := effectiveIdentityPath(identityPath)
 	if err != nil {
 		return err
@@ -553,8 +532,21 @@ func runWipe(stdout io.Writer, identityPath string) error {
 	if err := cryptopkg.DeleteIdentity(path); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(stdout, ui.WipeMessage+"\n", path)
-	return err
+	if _, err := fmt.Fprintf(stdout, ui.WipeMessage+"\n", path); err != nil {
+		return err
+	}
+	if peers {
+		peersPath, err := effectiveKnownPeersPath(knownPeersPath)
+		if err != nil {
+			return err
+		}
+		if err := trust.DeleteStore(peersPath); err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(stdout, "Removed known peers store at %s.\n", peersPath)
+		return err
+	}
+	return nil
 }
 
 func runTrustList(stdout io.Writer, knownPeersPath string) error {
