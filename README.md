@@ -214,23 +214,122 @@ A **fingerprint** is derived as `SHA-256(ed25519_pub || x25519_pub)`, displayed 
 
 Trust entries are stored at `~/.config/chat/known_peers.json`. The identity file lives at `~/.config/chat/identity.json`. Both paths can be overridden with flags.
 
-### First Contact
+### Example Sessions
 
-Neither side trusts an unknown peer by default. Pass `--allow-untrusted` on both sides the first time:
+#### First contact
 
-```bash
-# Alice (hosting)
-chat serve --name Alice --peer bob --allow-untrusted
+Neither side trusts an unknown peer by default. Both sides must pass `-u` the first time. Each side will be shown the other's fingerprint and asked to confirm before the session opens.
 
-# Bob (connecting)
-chat connect --name Bob --peer alice --allow-untrusted 192.168.1.10:7777
+**Alice (hosting):**
+```
+$ chat serve -n Alice -u
+
+identity passphrase:
+Using persistent identity at ~/.config/chat/identity.json.
+listening on 0.0.0.0:7777
+waiting for peer...
+peer connected from 192.168.1.20:54321
+
+First contact with Bob
+Their fingerprint: AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90
+
+Verify this fingerprint with your peer out-of-band (call, Signal, etc.)
+before continuing. Proceed? [y/N] y
+First contact for Bob. Stored peer fingerprint AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90.
+[chat opens]
 ```
 
-After the first session, the fingerprint is pinned. Future connections succeed without `--allow-untrusted`.
+**Bob (connecting):**
+```
+$ chat connect -n Bob -u 192.168.1.10:7777
 
-### Fingerprint Rotation
+identity passphrase:
+Using persistent identity at ~/.config/chat/identity.json.
+dialing 192.168.1.10:7777
 
-If a peer's fingerprint changes (key rotation, new device), the connection is blocked until `--allow-untrusted` is passed again to accept and re-pin the new fingerprint.
+First contact with Alice
+Their fingerprint: 12:34:56:78:90:AB:CD:EF:12:34:56:78:90:AB:CD:EF
+
+Verify this fingerprint with your peer out-of-band (call, Signal, etc.)
+before continuing. Proceed? [y/N] y
+First contact for Alice. Stored peer fingerprint 12:34:56:78:90:AB:CD:EF:12:34:56:78:90:AB:CD:EF.
+[chat opens]
+```
+
+After this, Alice's trust store has an entry for `Bob` and Bob's has an entry for `Alice`.
+
+```
+$ chat trust list
+Bob   AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90   first-seen=2025-01-01T12:00:00Z   last-seen=2025-01-01T12:00:00Z
+```
+
+#### Reconnecting
+
+No `-u` needed. The fingerprint is verified automatically against the stored entry.
+
+```
+$ chat serve -n Alice
+
+identity passphrase:
+listening on 0.0.0.0:7777
+waiting for peer...
+Peer identity for Bob matches the stored fingerprint.
+[chat opens]
+```
+
+#### What happens if Bob changes his display name
+
+The trust label is the peer's display name. If Bob reconnects as `-n Robert`, Alice's store has no entry under `Robert` — it looks like a stranger.
+
+```
+$ chat serve -n Alice
+
+peer connected from 192.168.1.20:54321
+Untrusted peer Robert with fingerprint AB:CD:EF:... Re-run with --allow-untrusted to trust and continue.
+session rejected; returning to listener
+```
+
+To avoid this, use `--peer` on both sides to set a fixed label that doesn't depend on the display name:
+
+```bash
+chat serve -n Alice -p bob -u
+chat connect -n Bob -p alice -u 192.168.1.10:7777
+```
+
+The trust entry is now keyed `bob` / `alice` permanently, regardless of what `--name` either side uses.
+
+#### Fingerprint changed (new device or key rotation)
+
+Without `-u`, the connection is blocked:
+
+```
+peer connected from 192.168.1.20:54321
+Blocked peer Bob because the fingerprint changed.
+  expected AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90
+  observed 99:88:77:66:55:44:33:22:11:00:FF:EE:DD:CC:BB:AA
+Re-run with --allow-untrusted after verification to rotate trust.
+```
+
+With `-u`, you get a warning and a chance to re-pin after verifying out-of-band:
+
+```
+WARNING: fingerprint for Bob has changed.
+Expected: AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90
+Observed: 99:88:77:66:55:44:33:22:11:00:FF:EE:DD:CC:BB:AA
+
+Only proceed if you have verified this new fingerprint out-of-band.
+Proceed? [y/N] y
+Peer identity for Bob was re-trusted with fingerprint 99:88:77:...
+```
+
+#### Declining the fingerprint prompt
+
+If you type `n` or press Enter at the `Proceed? [y/N]` prompt, the session is rejected immediately — no data is exchanged and nothing is stored.
+
+```
+Proceed? [y/N] n
+session rejected; returning to listener
+```
 
 ## Passphrase Protection
 
