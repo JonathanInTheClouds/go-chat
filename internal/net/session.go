@@ -237,12 +237,24 @@ func (s *SecureSession) SaveIncomingFile(fileID, name string, expectedSize int64
 	}
 
 	safeName := filepath.Base(name)
-	if safeName == "." || safeName == "" {
+	if safeName == "." || safeName == ".." || safeName == "" {
 		safeName = "received.bin"
 	}
 	targetPath, err := nextAvailableFilePath(destinationDir, safeName)
 	if err != nil {
 		return "", 0, err
+	}
+	// Confirm the resolved path is still inside destinationDir.
+	absDir, err := filepath.Abs(destinationDir)
+	if err != nil {
+		return "", 0, fmt.Errorf("resolve destination directory: %w", err)
+	}
+	absTarget, err := filepath.Abs(targetPath)
+	if err != nil {
+		return "", 0, fmt.Errorf("resolve target path: %w", err)
+	}
+	if !strings.HasPrefix(absTarget, absDir+string(filepath.Separator)) {
+		return "", 0, fmt.Errorf("rejected file %q: path escapes receive directory", name)
 	}
 
 	file, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)

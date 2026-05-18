@@ -109,10 +109,29 @@ func SaveIdentity(path string, identity *Identity) error {
 }
 
 func DeleteIdentity(path string) error {
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := secureDelete(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("delete identity file: %w", err)
 	}
 	return nil
+}
+
+// secureDelete overwrites the file with zeros before removing it to reduce
+// the chance of key material being recovered from disk.
+func secureDelete(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	zeros := make([]byte, info.Size())
+	_, _ = f.Write(zeros)
+	_ = f.Sync()
+	_ = f.Close()
+	return os.Remove(path)
 }
 
 func decodeBytes(value string) ([]byte, error) {

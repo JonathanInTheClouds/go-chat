@@ -10,6 +10,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	cryptopkg "github.com/JonathanInTheClouds/go-chat/internal/crypto"
@@ -365,7 +366,7 @@ func runServe(stdin io.Reader, stdout io.Writer, listen, identityPath, knownPeer
 			return err
 		}
 
-		trustErr := reportPeerTrust(stdout, runtime, peerLabel, conn.RemoteAddress(), peer.Fingerprint, allowUntrusted)
+		trustErr := reportPeerTrust(stdin, stdout, runtime, peerLabel, conn.RemoteAddress(), peer.Fingerprint, allowUntrusted)
 		if err := coordinateSessionAdmission(conn, false, trustErr); err != nil {
 			_ = conn.Close()
 			if isSessionRejected(err) {
@@ -444,7 +445,7 @@ func runConnect(stdin io.Reader, stdout io.Writer, address, identityPath, knownP
 	}
 	defer conn.Close()
 
-	trustErr := reportPeerTrust(stdout, runtime, peerLabel, address, peer.Fingerprint, allowUntrusted)
+	trustErr := reportPeerTrust(stdin, stdout, runtime, peerLabel, address, peer.Fingerprint, allowUntrusted)
 	if err := coordinateSessionAdmission(conn, true, trustErr); err != nil {
 		return err
 	}
@@ -683,7 +684,7 @@ func openTrustStore(path string) (*trust.Store, error) {
 	return trust.Open(path)
 }
 
-func reportPeerTrust(stdout io.Writer, runtime runtimeConfig, peerLabel, fallbackLabel, fingerprint string, allowUntrusted bool) error {
+func reportPeerTrust(stdin io.Reader, stdout io.Writer, runtime runtimeConfig, peerLabel, fallbackLabel, fingerprint string, allowUntrusted bool) error {
 	if runtime.MemoryOnly {
 		_, err := fmt.Fprintf(stdout, ui.MemoryOnlyPeerNotice+"\n", choosePeerLabel(peerLabel, fallbackLabel), fingerprint)
 		return err
@@ -708,6 +709,12 @@ func reportPeerTrust(stdout io.Writer, runtime runtimeConfig, peerLabel, fallbac
 			}
 			return &trustBlockedError{reason: fmt.Sprintf("untrusted peer %s", observation.Label)}
 		}
+		if _, err := fmt.Fprintf(stdout, "\nFirst contact with %s\nTheir fingerprint: %s\n\nVerify this fingerprint with your peer out-of-band (call, Signal, etc.)\nbefore continuing. Proceed? [y/N] ", observation.Label, observation.Observed); err != nil {
+			return err
+		}
+		if !readYes(stdin) {
+			return &trustBlockedError{reason: "fingerprint not confirmed by user"}
+		}
 		if err := store.Set(label, fingerprint, time.Now()); err != nil {
 			return err
 		}
@@ -724,6 +731,12 @@ func reportPeerTrust(stdout io.Writer, runtime runtimeConfig, peerLabel, fallbac
 			}
 			return &trustBlockedError{reason: fmt.Sprintf("peer fingerprint changed for %s", observation.Label)}
 		}
+		if _, err := fmt.Fprintf(stdout, "\nWARNING: fingerprint for %s has changed.\nExpected: %s\nObserved: %s\n\nOnly proceed if you have verified this new fingerprint out-of-band.\nProceed? [y/N] ", observation.Label, observation.Expected, observation.Observed); err != nil {
+			return err
+		}
+		if !readYes(stdin) {
+			return &trustBlockedError{reason: "fingerprint change not confirmed by user"}
+		}
 		if err := store.Set(label, fingerprint, time.Now()); err != nil {
 			return err
 		}
@@ -733,6 +746,13 @@ func reportPeerTrust(stdout io.Writer, runtime runtimeConfig, peerLabel, fallbac
 	}
 
 	return err
+}
+
+func readYes(r io.Reader) bool {
+	buf := make([]byte, 4)
+	n, _ := r.Read(buf)
+	answer := strings.TrimSpace(strings.ToLower(string(buf[:n])))
+	return answer == "y" || answer == "yes"
 }
 
 func choosePeerLabel(peerLabel, fallbackLabel string) string {
