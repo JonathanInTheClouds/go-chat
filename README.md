@@ -82,38 +82,38 @@ ip route get 1 | awk '{print $7; exit}'
 
 **Person hosting:**
 ```bash
-chat serve --name Alice --peer bob --allow-untrusted
+chat serve -n Alice -p bob -u
 ```
 
 **Person connecting** (replace `192.168.1.10` with the host's IP):
 ```bash
-chat connect --name Bob --peer alice --allow-untrusted 192.168.1.10:7777
+chat connect -n Bob -p alice -u 192.168.1.10:7777
 ```
 
-`--allow-untrusted` is only needed the first time. It pins the peer's fingerprint so future connections are verified automatically.
+`-u` (`--allow-untrusted`) is only needed the first time. It pins each other's fingerprint so future connections are verified automatically.
 
 ### Step 3 — Reconnecting (after first contact)
 
 **Person hosting:**
 ```bash
-chat serve --name Alice --peer bob
+chat serve -n Alice -p bob
 ```
 
 **Person connecting:**
 ```bash
-chat connect --name Bob --peer alice 192.168.1.10:7777
+chat connect -n Bob -p alice 192.168.1.10:7777
 ```
 
 ### Local testing (two terminals, same machine)
 
 **Terminal 1:**
 ```bash
-chat serve --name Alice --peer bob --allow-untrusted
+chat serve -n Alice -p bob -u
 ```
 
 **Terminal 2:**
 ```bash
-chat connect --name Bob --peer alice --allow-untrusted localhost:7777
+chat connect -n Bob -p alice -u localhost:7777
 ```
 
 ### Connect over the internet via tunnel
@@ -122,7 +122,7 @@ No port forwarding required. The host gets a public address via [bore.pub](https
 
 **Person hosting:**
 ```bash
-chat serve --name Alice --peer bob --allow-untrusted --tunnel
+chat serve -n Alice -p bob -u --tunnel
 ```
 
 The tunnel URL is printed on startup — share it with your peer:
@@ -130,7 +130,7 @@ The tunnel URL is printed on startup — share it with your peer:
 ```
 tunnel ready: bore.pub:12345
 share with your friend:
-  chat connect --name <their-name> --peer <label> --allow-untrusted bore.pub:12345
+  chat connect -n <name> -p <label> -u bore.pub:12345
 ```
 
 ### Memory-only mode (no identity or trust saved to disk)
@@ -139,50 +139,53 @@ Use this when you want a session that leaves no trace. Nothing is written to dis
 
 **Person hosting:**
 ```bash
-chat serve --name Alice --memory-only --allow-untrusted
+chat serve -n Alice -m -u
 ```
 
 **Person connecting:**
 ```bash
-chat connect --name Bob --memory-only --allow-untrusted 192.168.1.10:7777
+chat connect -n Bob -m -u 192.168.1.10:7777
 ```
 
 ## Usage
 
 ```
-chat serve [--listen host:port] [--name name] [--tunnel] [--ephemeral]
-           [--identity path] [--known-peers path] [--peer label]
-           [--allow-untrusted] [--memory-only]
+chat serve [-n name] [-p peer] [-u] [-m] [--listen host:port] [--tunnel]
+chat connect [-n name] [-p peer] [-u] [-m] host:port
 
-chat connect [--name name] [--ephemeral] [--identity path] [--known-peers path]
-             [--peer label] [--allow-untrusted] [--memory-only] host:port
+chat genkey [--ephemeral] [--force]
+chat fingerprint [--ephemeral]
+chat wipe [--peers]
 
-chat genkey [--identity path] [--force]
-chat genkey --ephemeral
-chat fingerprint [--ephemeral] [--identity path]
-chat wipe [--identity path]
-
-chat trust list   [--known-peers path]
-chat trust set    [--known-peers path] <label> <fingerprint>
-chat trust remove [--known-peers path] <label>
+chat trust list
+chat trust set <label> <fingerprint>
+chat trust remove <label>
 
 chat completion [bash|zsh|fish|powershell]
 ```
 
 ### Flags
 
+| Flag | Short | Description |
+|---|---|---|
+| `--name name` | `-n` | Your display name shown to the peer (defaults to system username) |
+| `--peer label` | `-p` | Label for the remote peer in the trust store |
+| `--allow-untrusted` | `-u` | Accept first contact or a changed peer fingerprint and persist trust |
+| `--memory-only` | `-m` | Ephemeral identity, no disk state, no file transfer |
+| `--listen host:port` | | Address to listen on, serve only (default `0.0.0.0:7777`) |
+| `--tunnel` | | Expose the server via a bore.pub tunnel (serve only) |
+| `--ephemeral` | | Throwaway in-memory identity for `genkey` / `fingerprint` |
+| `--force` | | Overwrite an existing persistent identity when running `genkey` |
+| `--peers` | | Also delete the trust store when running `wipe` |
+
+### Advanced flags
+
+These are hidden from `--help` but work on any command that reads from disk:
+
 | Flag | Description |
 |---|---|
-| `--name name` | Your display name shown to the peer (defaults to system username) |
-| `--listen host:port` | Address to listen on (default `0.0.0.0:7777`) |
-| `--tunnel` | Expose the server via a bore.pub tunnel (serve only) |
-| `--peer label` | Local label for the remote peer used in the trust store |
-| `--allow-untrusted` | Accept first contact or a changed peer fingerprint and persist trust |
-| `--memory-only` | Use an ephemeral identity; disable disk persistence and file transfer |
-| `--ephemeral` | Use a throwaway in-memory identity (does not affect trust store) |
-| `--identity path` | Override the default identity file path |
-| `--known-peers path` | Override the default known peers file path |
-| `--force` | Overwrite an existing persistent identity when running `genkey` |
+| `--identity path` | Override the default identity file location |
+| `--known-peers path` | Override the default known peers file location |
 
 ## In-Chat Commands
 
@@ -224,17 +227,26 @@ After the first session, the fingerprint is pinned. Future connections succeed w
 
 If a peer's fingerprint changes (key rotation, new device), the connection is blocked until `--allow-untrusted` is passed again to accept and re-pin the new fingerprint.
 
+## Wiping State
+
+```bash
+chat wipe              # delete identity only
+chat wipe --peers      # delete identity + trust store (full reset)
+```
+
+`Ctrl+W` inside a chat session does the same as `chat wipe --peers` and exits immediately.
+
 ## Runtime Modes
 
 ### Normal (persistent)
 
 Default behavior. Identity and trust state persist across runs. Received files are saved to `./received/`.
 
-### Memory-only (`--memory-only`)
+### Memory-only (`-m` / `--memory-only`)
 
 ```bash
-chat serve --memory-only
-chat connect --memory-only host:port
+chat serve -m
+chat connect -m host:port
 ```
 
 - Ephemeral in-memory identity (rotates every run)
