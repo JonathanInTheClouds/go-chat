@@ -29,17 +29,49 @@ go build -o chat ./cmd/chat
 
 ## Quick Start
 
-**Host a session:**
+### Step 1 — Find your IP address
+
 ```bash
-chat serve
+ipconfig getifaddr en0
 ```
 
-**Connect to a host:**
+### Step 2 — First time connecting (both sides run this)
+
+**Person hosting:**
 ```bash
-chat connect 192.168.1.10:7777
+go run ./cmd/chat serve --name Alice --peer bob --allow-untrusted --listen 0.0.0.0:8888
 ```
 
-On first contact, both sides must pass `--allow-untrusted` to accept and pin the peer's fingerprint. Subsequent connections are verified automatically.
+**Person connecting** (replace `192.168.1.10` with the host's IP):
+```bash
+go run ./cmd/chat connect --name Bob --peer alice --allow-untrusted 192.168.1.10:8888
+```
+
+`--allow-untrusted` is only needed the first time. It pins the peer's fingerprint so future connections are verified automatically.
+
+### Step 3 — Reconnecting (after first contact)
+
+**Person hosting:**
+```bash
+go run ./cmd/chat serve --name Alice --peer bob --listen 0.0.0.0:8888
+```
+
+**Person connecting:**
+```bash
+go run ./cmd/chat connect --name Bob --peer alice 192.168.1.10:8888
+```
+
+### Local testing (two terminals, same machine)
+
+**Terminal 1:**
+```bash
+go run ./cmd/chat serve --name Alice --peer bob --allow-untrusted --listen 0.0.0.0:8888
+```
+
+**Terminal 2:**
+```bash
+go run ./cmd/chat connect --name Bob --peer alice --allow-untrusted localhost:8888
+```
 
 ## Usage
 
@@ -64,8 +96,9 @@ chat trust remove [--known-peers path] <label>
 
 | Flag | Description |
 |---|---|
+| `--name name` | Your display name shown to the peer in chat (defaults to system username) |
 | `--listen host:port` | Address to listen on (default `0.0.0.0:7777`) |
-| `--peer label` | Stable label to use for the remote peer in the trust store |
+| `--peer label` | Local label for the remote peer used in the trust store |
 | `--allow-untrusted` | Accept first contact or a changed peer fingerprint and persist trust |
 | `--memory-only` | Use an ephemeral identity; disable disk persistence and file transfer |
 | `--ephemeral` | Use a throwaway in-memory identity (does not affect trust store) |
@@ -96,14 +129,14 @@ Trust entries are stored at `~/.config/chat/known_peers.json`. The identity file
 
 ### First Contact
 
-Neither side trusts an unknown peer by default:
+Neither side trusts an unknown peer by default. Pass `--allow-untrusted` on both sides the first time:
 
 ```bash
-# Alice
-chat serve --peer bob --allow-untrusted
+# Alice (hosting)
+go run ./cmd/chat serve --name Alice --peer bob --allow-untrusted --listen 0.0.0.0:8888
 
-# Bob
-chat connect --peer alice --allow-untrusted 192.168.1.10:7777
+# Bob (connecting)
+go run ./cmd/chat connect --name Bob --peer alice --allow-untrusted 192.168.1.10:8888
 ```
 
 After the first session, the fingerprint is pinned. Future connections succeed without `--allow-untrusted`.
