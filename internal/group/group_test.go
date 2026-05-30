@@ -1,6 +1,7 @@
 package group
 
 import (
+	"bytes"
 	"io"
 	"testing"
 	"time"
@@ -134,6 +135,78 @@ func TestReplacingSameMemberDoesNotRemoveNewConnection(t *testing.T) {
 	}
 }
 
+func TestRelayedGroupChatDoesNotCarryPlaintext(t *testing.T) {
+	hostIdentity := mustIdentity(t)
+	bobIdentity := mustIdentity(t)
+	carolIdentity := mustIdentity(t)
+
+	listener, err := netpkg.Listen(netpkg.ListenerConfig{ListenAddress: "127.0.0.1:0"}, io.Discard)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	room, err := NewServer("lab", "Alice", hostIdentity.Fingerprint())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer room.Close()
+
+	namesByFingerprint := map[string]string{
+		bobIdentity.Fingerprint():   "Bob",
+		carolIdentity.Fingerprint(): "Carol",
+	}
+	acceptErr := make(chan error, 1)
+	go acceptTestMembers(t, listener, room, hostIdentity, namesByFingerprint, acceptErr)
+
+	bobSession, _, err := netpkg.Dial(netpkg.DialConfig{RemoteAddress: listener.Addr().String()}, bobIdentity, io.Discard)
+	if err != nil {
+		t.Fatalf("dial bob: %v", err)
+	}
+	defer bobSession.Close()
+
+	carolSession, _, err := netpkg.Dial(netpkg.DialConfig{RemoteAddress: listener.Addr().String()}, carolIdentity, io.Discard)
+	if err != nil {
+		t.Fatalf("dial carol: %v", err)
+	}
+	defer carolSession.Close()
+
+	if err := <-acceptErr; err != nil {
+		t.Fatalf("accept members: %v", err)
+	}
+
+	bobClient := clientFromInitialList(t, "lab", "Bob", bobSession)
+	carolList, err := carolSession.ReceiveMessage()
+	if err != nil {
+		t.Fatalf("receive carol initial member list: %v", err)
+	}
+	if carolList.Type != protocol.MessageTypeGroupMemberList {
+		t.Fatalf("expected carol member list, got %q", carolList.Type)
+	}
+
+	secretText := "do not relay this as plaintext"
+	if err := bobClient.SendChat(secretText); err != nil {
+		t.Fatalf("bob send: %v", err)
+	}
+
+	relayed, err := carolSession.ReceiveMessage()
+	if err != nil {
+		t.Fatalf("receive relayed message: %v", err)
+	}
+	if relayed.Type != protocol.MessageTypeGroupChat {
+		t.Fatalf("expected group chat, got %q", relayed.Type)
+	}
+	if relayed.Text != "" {
+		t.Fatalf("relayed message carried plaintext text: %q", relayed.Text)
+	}
+	if len(relayed.Ciphertext) == 0 || len(relayed.Nonce) == 0 {
+		t.Fatalf("relayed message missing ciphertext or nonce")
+	}
+	if bytes.Contains(relayed.Ciphertext, []byte(secretText)) {
+		t.Fatalf("ciphertext contains plaintext")
+	}
+}
+
 func acceptTestMembers(t *testing.T, listener *netpkg.SessionListener, room *Server, hostIdentity *cryptopkg.Identity, namesByFingerprint map[string]string, result chan<- error) {
 	t.Helper()
 	for i := 0; i < len(namesByFingerprint); i++ {
@@ -148,7 +221,7 @@ func acceptTestMembers(t *testing.T, listener *netpkg.SessionListener, room *Ser
 			result <- nil
 			return
 		}
-		if err := room.AddMember(session, name, peer); err != nil {
+		if err := room.AddMember(session, name, peer, mustSenderKey(t)); err != nil {
 			result <- err
 			return
 		}
@@ -162,7 +235,12 @@ func acceptNamedTestMember(listener *netpkg.SessionListener, room *Server, hostI
 		result <- err
 		return
 	}
-	result <- room.AddMember(session, name, peer)
+	senderKey, err := NewSenderKey()
+	if err != nil {
+		result <- err
+		return
+	}
+	result <- room.AddMember(session, name, peer, senderKey)
 }
 
 func clientFromInitialList(t *testing.T, roomName, localName string, session *netpkg.SecureSession) *Client {
@@ -199,4 +277,13 @@ func mustIdentity(t *testing.T) *cryptopkg.Identity {
 		t.Fatalf("generate identity: %v", err)
 	}
 	return identity
+}
+
+func mustSenderKey(t *testing.T) []byte {
+	t.Helper()
+	key, err := NewSenderKey()
+	if err != nil {
+		t.Fatalf("generate sender key: %v", err)
+	}
+	return key
 }

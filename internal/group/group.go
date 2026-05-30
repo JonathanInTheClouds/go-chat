@@ -1,6 +1,8 @@
 package group
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -52,15 +54,17 @@ type Transport interface {
 }
 
 type Server struct {
-	mu       sync.Mutex
-	roomName string
-	groupID  string
-	local    Member
-	invite   string
-	epoch    uint64
-	members  map[string]*serverMember
-	events   chan Event
-	closed   bool
+	mu         sync.Mutex
+	roomName   string
+	groupID    string
+	local      Member
+	invite     string
+	senderKey  []byte
+	senderKeys map[string][]byte
+	epoch      uint64
+	members    map[string]*serverMember
+	events     chan Event
+	closed     bool
 }
 
 type serverMember struct {
@@ -74,6 +78,10 @@ func NewServer(roomName, localName, localFingerprint string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	senderKey, err := NewSenderKey()
+	if err != nil {
+		return nil, err
+	}
 	local := Member{
 		ID:          MemberID(localFingerprint),
 		Name:        localName,
@@ -81,12 +89,14 @@ func NewServer(roomName, localName, localFingerprint string) (*Server, error) {
 		Address:     "local",
 	}
 	return &Server{
-		roomName: roomName,
-		groupID:  groupID,
-		local:    local,
-		epoch:    1,
-		members:  map[string]*serverMember{},
-		events:   make(chan Event, 64),
+		roomName:   roomName,
+		groupID:    groupID,
+		local:      local,
+		senderKey:  senderKey,
+		senderKeys: map[string][]byte{local.ID: cloneBytes(senderKey)},
+		epoch:      1,
+		members:    map[string]*serverMember{},
+		events:     make(chan Event, 64),
 	}, nil
 }
 
@@ -124,7 +134,11 @@ func (s *Server) Events() <-chan Event {
 	return s.events
 }
 
-func (s *Server) AddMember(session *netpkg.SecureSession, name string, peer netpkg.PeerIdentity) error {
+func (s *Server) AddMember(session *netpkg.SecureSession, name string, peer netpkg.PeerIdentity, senderKey []byte) error {
+	if err := validateSenderKey(senderKey); err != nil {
+		return err
+	}
+
 	member := Member{
 		ID:          MemberID(peer.Fingerprint),
 		Name:        name,
@@ -139,6 +153,7 @@ func (s *Server) AddMember(session *netpkg.SecureSession, name string, peer netp
 		Name:        member.Name,
 		Fingerprint: member.Fingerprint,
 		Address:     member.Address,
+		SenderKey:   cloneBytes(senderKey),
 	}
 
 	wrapped := &serverMember{
@@ -157,12 +172,13 @@ func (s *Server) AddMember(session *netpkg.SecureSession, name string, peer netp
 		close(old.outbound)
 	}
 	s.members[member.ID] = wrapped
+	s.senderKeys[member.ID] = cloneBytes(senderKey)
 	s.epoch++
 	list := protocol.Message{
 		Type:    protocol.MessageTypeGroupMemberList,
 		GroupID: s.groupID,
 		Epoch:   s.epoch,
-		Members: protocolMembers(s.membersLocked()),
+		Members: s.protocolMembersLocked(),
 	}
 	wrapped.outbound <- list
 	s.broadcastExceptLocked(joined, member.ID)
@@ -184,12 +200,13 @@ func (s *Server) SendChat(text string) error {
 		return err
 	}
 	msg := protocol.Message{
-		Type:      protocol.MessageTypeGroupChat,
-		GroupID:   s.groupID,
-		SenderID:  s.local.ID,
-		MessageID: messageID,
-		Text:      text,
-		Epoch:     s.currentEpoch(),
+		Type:     protocol.MessageTypeGroupChat,
+		GroupID:  s.groupID,
+		SenderID: s.local.ID,
+		Epoch:    s.currentEpoch(),
+	}
+	if err := encryptGroupMessage(&msg, s.senderKey, messageID, text); err != nil {
+		return err
 	}
 	s.broadcast(msg)
 	s.emit(Event{Type: EventMessage, Member: s.local, Text: text})
@@ -233,24 +250,28 @@ func (s *Server) readLoop(member *serverMember) {
 		}
 		switch msg.Type {
 		case protocol.MessageTypeGroupChat:
-			if strings.TrimSpace(msg.Text) == "" {
+			if msg.MessageID == "" || len(msg.Ciphertext) == 0 || len(msg.Nonce) == 0 {
 				continue
 			}
-			messageID, err := randomID()
-			if err != nil {
-				s.emit(Event{Type: EventError, Err: err})
-				continue
-			}
+			msg.GroupID = s.groupID
+			msg.SenderID = member.member.ID
+			msg.Epoch = s.currentEpoch()
 			relayed := protocol.Message{
-				Type:      protocol.MessageTypeGroupChat,
-				GroupID:   s.groupID,
-				SenderID:  member.member.ID,
-				MessageID: messageID,
-				Text:      msg.Text,
-				Epoch:     s.currentEpoch(),
+				Type:       protocol.MessageTypeGroupChat,
+				GroupID:    msg.GroupID,
+				SenderID:   msg.SenderID,
+				MessageID:  msg.MessageID,
+				Ciphertext: cloneBytes(msg.Ciphertext),
+				Nonce:      cloneBytes(msg.Nonce),
+				Epoch:      msg.Epoch,
 			}
 			s.broadcastExcept(relayed, member.member.ID)
-			s.emit(Event{Type: EventMessage, Member: member.member, Text: msg.Text})
+			text, err := s.decryptText(relayed)
+			if err != nil {
+				s.emit(Event{Type: EventError, Member: member.member, Err: err})
+				continue
+			}
+			s.emit(Event{Type: EventMessage, Member: member.member, Text: text})
 		case protocol.MessageTypeGroupTyping:
 			relayed := protocol.Message{
 				Type:     protocol.MessageTypeGroupTyping,
@@ -283,6 +304,7 @@ func (s *Server) removeMember(member *serverMember) {
 		return
 	}
 	delete(s.members, member.member.ID)
+	delete(s.senderKeys, member.member.ID)
 	s.epoch++
 	_ = member.session.Close()
 	close(member.outbound)
@@ -332,6 +354,21 @@ func (s *Server) membersLocked() []Member {
 	return members
 }
 
+func (s *Server) protocolMembersLocked() []protocol.GroupMember {
+	members := s.membersLocked()
+	result := make([]protocol.GroupMember, 0, len(members))
+	for _, member := range members {
+		result = append(result, protocol.GroupMember{
+			ID:          member.ID,
+			Name:        member.Name,
+			Fingerprint: member.Fingerprint,
+			Address:     member.Address,
+			SenderKey:   cloneBytes(s.senderKeys[member.ID]),
+		})
+	}
+	return result
+}
+
 func (s *Server) currentEpoch() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -345,14 +382,23 @@ func (s *Server) emit(event Event) {
 	}
 }
 
+func (s *Server) decryptText(message protocol.Message) (string, error) {
+	s.mu.Lock()
+	key := cloneBytes(s.senderKeys[message.SenderID])
+	s.mu.Unlock()
+	return decryptGroupMessage(message, key)
+}
+
 type Client struct {
-	mu       sync.Mutex
-	roomName string
-	groupID  string
-	local    Member
-	members  map[string]Member
-	session  *netpkg.SecureSession
-	events   chan Event
+	mu         sync.Mutex
+	roomName   string
+	groupID    string
+	local      Member
+	senderKey  []byte
+	senderKeys map[string][]byte
+	members    map[string]Member
+	session    *netpkg.SecureSession
+	events     chan Event
 }
 
 func NewClient(roomName, localName string, session *netpkg.SecureSession) *Client {
@@ -364,10 +410,15 @@ func NewClient(roomName, localName string, session *netpkg.SecureSession) *Clien
 func NewClientWithMemberList(roomName, localName string, session *netpkg.SecureSession, list protocol.Message) *Client {
 	client := newClient(roomName, localName, session)
 	members := membersFromProtocol(list.Members)
+	senderKeys := senderKeysFromProtocol(list.Members)
 	client.groupID = list.GroupID
 	client.members = map[string]Member{}
 	for _, member := range members {
 		client.members[member.ID] = member
+	}
+	client.senderKeys = senderKeys
+	if senderKey := senderKeys[client.local.ID]; len(senderKey) > 0 {
+		client.senderKey = cloneBytes(senderKey)
 	}
 	client.emit(Event{Type: EventMemberList, Members: members})
 	go client.readLoop()
@@ -375,6 +426,10 @@ func NewClientWithMemberList(roomName, localName string, session *netpkg.SecureS
 }
 
 func newClient(roomName, localName string, session *netpkg.SecureSession) *Client {
+	senderKey, err := NewSenderKey()
+	if err != nil {
+		panic(err)
+	}
 	local := Member{
 		ID:          MemberID(session.LocalFingerprint()),
 		Name:        localName,
@@ -382,11 +437,13 @@ func newClient(roomName, localName string, session *netpkg.SecureSession) *Clien
 		Address:     "local",
 	}
 	client := &Client{
-		roomName: roomName,
-		local:    local,
-		members:  map[string]Member{local.ID: local},
-		session:  session,
-		events:   make(chan Event, 64),
+		roomName:   roomName,
+		local:      local,
+		senderKey:  senderKey,
+		senderKeys: map[string][]byte{local.ID: cloneBytes(senderKey)},
+		members:    map[string]Member{local.ID: local},
+		session:    session,
+		events:     make(chan Event, 64),
 	}
 	return client
 }
@@ -431,13 +488,15 @@ func (c *Client) SendChat(text string) error {
 	if err != nil {
 		return err
 	}
-	if err := c.session.SendMessage(protocol.Message{
-		Type:      protocol.MessageTypeGroupChat,
-		GroupID:   c.GroupID(),
-		SenderID:  c.local.ID,
-		MessageID: messageID,
-		Text:      text,
-	}); err != nil {
+	msg := protocol.Message{
+		Type:     protocol.MessageTypeGroupChat,
+		GroupID:  c.GroupID(),
+		SenderID: c.local.ID,
+	}
+	if err := encryptGroupMessage(&msg, c.senderKey, messageID, text); err != nil {
+		return err
+	}
+	if err := c.session.SendMessage(msg); err != nil {
 		return err
 	}
 	c.emit(Event{Type: EventMessage, Member: c.local, Text: text})
@@ -474,6 +533,10 @@ func (c *Client) readLoop() {
 			for _, member := range members {
 				c.members[member.ID] = member
 			}
+			c.senderKeys = senderKeysFromProtocol(msg.Members)
+			if senderKey := c.senderKeys[c.local.ID]; len(senderKey) > 0 {
+				c.senderKey = cloneBytes(senderKey)
+			}
 			c.mu.Unlock()
 			c.emit(Event{Type: EventMemberList, Members: members})
 		case protocol.MessageTypeGroupMemberJoined:
@@ -485,6 +548,7 @@ func (c *Client) readLoop() {
 			}
 			c.mu.Lock()
 			c.members[member.ID] = member
+			c.senderKeys[member.ID] = cloneBytes(msg.SenderKey)
 			members := c.membersLocked()
 			c.mu.Unlock()
 			c.emit(Event{Type: EventMemberJoined, Member: member, Members: members})
@@ -492,11 +556,17 @@ func (c *Client) readLoop() {
 			c.mu.Lock()
 			member := c.members[msg.MemberID]
 			delete(c.members, msg.MemberID)
+			delete(c.senderKeys, msg.MemberID)
 			members := c.membersLocked()
 			c.mu.Unlock()
 			c.emit(Event{Type: EventMemberLeft, Member: member, Members: members})
 		case protocol.MessageTypeGroupChat:
-			c.emit(Event{Type: EventMessage, Member: c.memberByID(msg.SenderID), Text: msg.Text})
+			text, err := c.decryptText(msg)
+			if err != nil {
+				c.emit(Event{Type: EventError, Err: err})
+				continue
+			}
+			c.emit(Event{Type: EventMessage, Member: c.memberByID(msg.SenderID), Text: text})
 		case protocol.MessageTypeGroupTyping:
 			c.emit(Event{Type: EventTyping, Member: c.memberByID(msg.SenderID)})
 		default:
@@ -529,15 +599,23 @@ func (c *Client) emit(event Event) {
 	}
 }
 
-func protocolMembers(members []Member) []protocol.GroupMember {
-	result := make([]protocol.GroupMember, 0, len(members))
+func (c *Client) SenderKey() []byte {
+	return cloneBytes(c.senderKey)
+}
+
+func (c *Client) decryptText(message protocol.Message) (string, error) {
+	c.mu.Lock()
+	key := cloneBytes(c.senderKeys[message.SenderID])
+	c.mu.Unlock()
+	return decryptGroupMessage(message, key)
+}
+
+func senderKeysFromProtocol(members []protocol.GroupMember) map[string][]byte {
+	result := make(map[string][]byte, len(members))
 	for _, member := range members {
-		result = append(result, protocol.GroupMember{
-			ID:          member.ID,
-			Name:        member.Name,
-			Fingerprint: member.Fingerprint,
-			Address:     member.Address,
-		})
+		if len(member.SenderKey) > 0 {
+			result[member.ID] = cloneBytes(member.SenderKey)
+		}
 	}
 	return result
 }
@@ -569,4 +647,83 @@ func randomID() (string, error) {
 		return "", fmt.Errorf("generate id: %w", err)
 	}
 	return hex.EncodeToString(raw[:]), nil
+}
+
+func NewSenderKey() ([]byte, error) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("generate sender key: %w", err)
+	}
+	return key, nil
+}
+
+func validateSenderKey(key []byte) error {
+	if len(key) != 32 {
+		return fmt.Errorf("sender key must be 32 bytes, got %d", len(key))
+	}
+	return nil
+}
+
+func encryptGroupMessage(message *protocol.Message, key []byte, messageID, text string) error {
+	if err := validateSenderKey(key); err != nil {
+		return err
+	}
+	if message == nil {
+		return errors.New("message is nil")
+	}
+	if message.GroupID == "" || message.SenderID == "" {
+		return errors.New("group id and sender id are required")
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return err
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return fmt.Errorf("generate nonce: %w", err)
+	}
+
+	message.MessageID = messageID
+	message.Nonce = nonce
+	message.Ciphertext = aead.Seal(nil, nonce, []byte(text), groupMessageAAD(*message))
+	message.Text = ""
+	return nil
+}
+
+func decryptGroupMessage(message protocol.Message, key []byte) (string, error) {
+	if err := validateSenderKey(key); err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	if len(message.Nonce) != aead.NonceSize() {
+		return "", fmt.Errorf("invalid nonce size: %d", len(message.Nonce))
+	}
+	plaintext, err := aead.Open(nil, message.Nonce, message.Ciphertext, groupMessageAAD(message))
+	if err != nil {
+		return "", fmt.Errorf("decrypt group message: %w", err)
+	}
+	return string(plaintext), nil
+}
+
+func groupMessageAAD(message protocol.Message) []byte {
+	return []byte(message.GroupID + "\x00" + message.SenderID + "\x00" + message.MessageID)
+}
+
+func cloneBytes(value []byte) []byte {
+	if value == nil {
+		return nil
+	}
+	return append([]byte(nil), value...)
 }

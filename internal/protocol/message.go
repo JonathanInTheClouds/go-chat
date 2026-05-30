@@ -33,6 +33,8 @@ type Message struct {
 	Size        int64         `json:"size,omitempty"`
 	Index       int           `json:"index,omitempty"`
 	Chunk       []byte        `json:"chunk,omitempty"`
+	Ciphertext  []byte        `json:"ciphertext,omitempty"`
+	Nonce       []byte        `json:"nonce,omitempty"`
 	GroupID     string        `json:"group_id,omitempty"`
 	RoomName    string        `json:"room_name,omitempty"`
 	MemberID    string        `json:"member_id,omitempty"`
@@ -42,6 +44,7 @@ type Message struct {
 	Members     []GroupMember `json:"members,omitempty"`
 	Fingerprint string        `json:"fingerprint,omitempty"`
 	Address     string        `json:"address,omitempty"`
+	SenderKey   []byte        `json:"sender_key,omitempty"`
 }
 
 type GroupMember struct {
@@ -49,6 +52,7 @@ type GroupMember struct {
 	Name        string `json:"name,omitempty"`
 	Fingerprint string `json:"fingerprint"`
 	Address     string `json:"address,omitempty"`
+	SenderKey   []byte `json:"sender_key,omitempty"`
 }
 
 func EncodeMessage(message Message) ([]byte, error) {
@@ -103,8 +107,8 @@ func ValidateMessage(message Message) error {
 			return errors.New("handshake name requires text")
 		}
 	case MessageTypeGroupHello:
-		if message.RoomName == "" || message.Name == "" {
-			return errors.New("group hello requires room name and member name")
+		if message.RoomName == "" || message.Name == "" || len(message.SenderKey) == 0 {
+			return errors.New("group hello requires room name, member name, and sender key")
 		}
 	case MessageTypeGroupMemberList:
 		if message.GroupID == "" || len(message.Members) == 0 {
@@ -114,16 +118,16 @@ func ValidateMessage(message Message) error {
 			return err
 		}
 	case MessageTypeGroupMemberJoined:
-		if message.GroupID == "" || message.MemberID == "" || message.Name == "" || message.Fingerprint == "" {
-			return errors.New("group member joined requires group id, member id, name, and fingerprint")
+		if message.GroupID == "" || message.MemberID == "" || message.Name == "" || message.Fingerprint == "" || len(message.SenderKey) == 0 {
+			return errors.New("group member joined requires group id, member id, name, fingerprint, and sender key")
 		}
 	case MessageTypeGroupMemberLeft:
 		if message.GroupID == "" || message.MemberID == "" {
 			return errors.New("group member left requires group id and member id")
 		}
 	case MessageTypeGroupChat:
-		if message.GroupID == "" || message.SenderID == "" || message.MessageID == "" || message.Text == "" {
-			return errors.New("group chat requires group id, sender id, message id, and text")
+		if message.GroupID == "" || message.SenderID == "" || message.MessageID == "" || len(message.Ciphertext) == 0 || len(message.Nonce) == 0 {
+			return errors.New("group chat requires group id, sender id, message id, ciphertext, and nonce")
 		}
 	case MessageTypeGroupTyping:
 		if message.GroupID == "" || message.SenderID == "" {
@@ -138,8 +142,8 @@ func ValidateMessage(message Message) error {
 
 func validateGroupMembers(members []GroupMember) error {
 	for _, member := range members {
-		if member.ID == "" || member.Fingerprint == "" {
-			return errors.New("group members require id and fingerprint")
+		if member.ID == "" || member.Fingerprint == "" || len(member.SenderKey) == 0 {
+			return errors.New("group members require id, fingerprint, and sender key")
 		}
 	}
 	return nil

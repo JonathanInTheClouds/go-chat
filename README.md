@@ -10,7 +10,7 @@ A terminal-native encrypted chat tool written in Go.
 - **Fingerprint confirmation prompt** — verify peer identity out-of-band before connecting
 - **Passphrase-protected identity** — keys at rest are encrypted with argon2id + AES-256-GCM
 - **Explicit session admission** — both sides must accept before entering the chat UI
-- **Small group rooms** — host-relayed text rooms with multiple encrypted peer sessions
+- **Small group rooms** — host-relayed text rooms with multiple encrypted peer sessions and sender-key encrypted group message payloads
 - **Encrypted file transfer** in-band over the established session
 - **Memory-only mode** — ephemeral identity, no disk state, no file transfer
 - **Panic wipe** (`Ctrl+W`) — destroys identity, trust files, and received directory and exits immediately
@@ -137,7 +137,7 @@ chat room join localhost:7777 lab -n Bob -m
 chat room join localhost:7777 lab -n Carol -m
 ```
 
-Group rooms currently support live text chat. Each room member still connects over an individually encrypted Noise session, and the host relays messages to the other members.
+Group rooms currently support live text chat. Each room member still connects over an individually encrypted Noise session, and group text payloads are encrypted with per-member sender keys before relay.
 
 Use `-m` for same-machine room testing so Bob and Carol get separate ephemeral identities. Without it, both terminals reuse the same persistent identity file and look like the same cryptographic member.
 
@@ -241,6 +241,16 @@ These are hidden from `--help` but work on any command that reads from disk:
 | `PgUp` / `PgDn` | Scroll the message transcript |
 
 Note: `/send` is available in 1:1 chat only. Group rooms currently support text chat, membership notices, and typing indicators.
+
+## Group Encryption Model
+
+Group room transport still uses Noise XX for every member connection. On top of that, group text messages are encrypted as sender-key payloads before the host relay forwards them.
+
+Current limits:
+
+- The room host is still a room member and receives sender keys during admission.
+- This is not MLS yet and does not provide MLS-style post-compromise recovery or robust membership epochs.
+- Group file transfer is not sender-key encrypted yet because group file transfer is not implemented.
 
 ## Identity and Trust
 

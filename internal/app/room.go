@@ -167,10 +167,15 @@ func runRoomJoin(stdin io.Reader, stdout io.Writer, address, roomName, identityP
 		return err
 	}
 
+	senderKey, err := grouppkg.NewSenderKey()
+	if err != nil {
+		return err
+	}
 	if err := conn.SendMessage(protocol.Message{
-		Type:     protocol.MessageTypeGroupHello,
-		RoomName: roomName,
-		Name:     localName,
+		Type:      protocol.MessageTypeGroupHello,
+		RoomName:  roomName,
+		Name:      localName,
+		SenderKey: senderKey,
 	}); err != nil {
 		return err
 	}
@@ -229,7 +234,7 @@ func acceptRoomMembers(listener *netpkg.SessionListener, identity *cryptopkg.Ide
 			peerName = hello.Name
 		}
 
-		if err := room.AddMember(conn, peerName, peer); err != nil {
+		if err := room.AddMember(conn, peerName, peer, hello.SenderKey); err != nil {
 			_ = conn.Close()
 		}
 	}
