@@ -189,28 +189,10 @@ func runRoomJoin(stdin io.Reader, stdout io.Writer, address, roomName, identityP
 }
 
 func acceptRoomMembers(listener *netpkg.SessionListener, identity *cryptopkg.Identity, stdin io.Reader, stdout io.Writer, runtime runtimeConfig, room *grouppkg.Server, roomName string, allowUntrusted bool, localName string) {
-	const rateLimitWindow = 2 * time.Second
-	ipLastSeen := make(map[string]time.Time)
-
 	for {
 		conn, peer, err := listener.Accept(identity, io.Discard)
 		if err != nil {
 			return
-		}
-
-		now := time.Now()
-		for ip, t := range ipLastSeen {
-			if now.Sub(t) > 60*time.Second {
-				delete(ipLastSeen, ip)
-			}
-		}
-		remoteIP, _, splitErr := net.SplitHostPort(conn.RemoteAddress())
-		if splitErr == nil {
-			if now.Sub(ipLastSeen[remoteIP]) < rateLimitWindow {
-				_ = conn.Close()
-				continue
-			}
-			ipLastSeen[remoteIP] = now
 		}
 
 		peerName, err := exchangeNames(conn, false, localName)

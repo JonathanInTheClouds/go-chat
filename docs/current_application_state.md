@@ -84,6 +84,7 @@ Current foundations:
 - The host admits trusted peers, maintains the member list, and relays group text messages to all other connected members.
 - The group UI shows room metadata, member names, membership notices, and sender-attributed messages.
 - Group file transfer is not implemented yet.
+- Same-machine manual testing should use memory-only clients or separate identity paths so each terminal has a distinct cryptographic identity.
 
 ### File Transfer
 

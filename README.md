@@ -129,15 +129,17 @@ chat room serve lab -n Alice -u
 
 **Terminal 2:**
 ```bash
-chat room join localhost:7777 lab -n Bob -u
+chat room join localhost:7777 lab -n Bob -m
 ```
 
 **Terminal 3:**
 ```bash
-chat room join localhost:7777 lab -n Carol -u
+chat room join localhost:7777 lab -n Carol -m
 ```
 
 Group rooms currently support live text chat. Each room member still connects over an individually encrypted Noise session, and the host relays messages to the other members.
+
+Use `-m` for same-machine room testing so Bob and Carol get separate ephemeral identities. Without it, both terminals reuse the same persistent identity file and look like the same cryptographic member.
 
 ### Connect over the internet via tunnel
 
