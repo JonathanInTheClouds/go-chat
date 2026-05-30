@@ -196,6 +196,9 @@ func TestRelayedGroupChatDoesNotCarryPlaintext(t *testing.T) {
 	if relayed.Type != protocol.MessageTypeGroupChat {
 		t.Fatalf("expected group chat, got %q", relayed.Type)
 	}
+	if relayed.SenderSeq != 0 {
+		t.Fatalf("unexpected first sender sequence: %d", relayed.SenderSeq)
+	}
 	if relayed.Text != "" {
 		t.Fatalf("relayed message carried plaintext text: %q", relayed.Text)
 	}
@@ -204,6 +207,24 @@ func TestRelayedGroupChatDoesNotCarryPlaintext(t *testing.T) {
 	}
 	if bytes.Contains(relayed.Ciphertext, []byte(secretText)) {
 		t.Fatalf("ciphertext contains plaintext")
+	}
+
+	nextSecretText := "the ratchet should move forward"
+	if err := bobClient.SendChat(nextSecretText); err != nil {
+		t.Fatalf("bob second send: %v", err)
+	}
+	nextRelayed, err := carolSession.ReceiveMessage()
+	if err != nil {
+		t.Fatalf("receive second relayed message: %v", err)
+	}
+	if nextRelayed.SenderSeq != 1 {
+		t.Fatalf("unexpected second sender sequence: %d", nextRelayed.SenderSeq)
+	}
+	if nextRelayed.Text != "" {
+		t.Fatalf("second relayed message carried plaintext text: %q", nextRelayed.Text)
+	}
+	if bytes.Contains(nextRelayed.Ciphertext, []byte(nextSecretText)) {
+		t.Fatalf("second ciphertext contains plaintext")
 	}
 }
 

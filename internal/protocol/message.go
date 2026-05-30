@@ -39,6 +39,7 @@ type Message struct {
 	RoomName    string        `json:"room_name,omitempty"`
 	MemberID    string        `json:"member_id,omitempty"`
 	SenderID    string        `json:"sender_id,omitempty"`
+	SenderSeq   uint64        `json:"sender_seq,omitempty"`
 	MessageID   string        `json:"message_id,omitempty"`
 	Epoch       uint64        `json:"epoch,omitempty"`
 	Members     []GroupMember `json:"members,omitempty"`
@@ -53,6 +54,7 @@ type GroupMember struct {
 	Fingerprint string `json:"fingerprint"`
 	Address     string `json:"address,omitempty"`
 	SenderKey   []byte `json:"sender_key,omitempty"`
+	SenderSeq   uint64 `json:"sender_seq,omitempty"`
 }
 
 func EncodeMessage(message Message) ([]byte, error) {

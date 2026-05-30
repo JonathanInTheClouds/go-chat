@@ -82,14 +82,14 @@ Current foundations:
 - `chat room join <host:port> <room-name>` joins an existing room.
 - Each room member connects to the host with the existing Noise XX encrypted session and identity verification flow.
 - The host admits trusted peers, maintains the member list, and relays group text messages to all other connected members.
-- Group text messages carry ciphertext and nonce fields over the relay path; local clients decrypt them with per-member sender keys.
+- Group text messages carry ciphertext, nonce, and sender sequence fields over the relay path; local clients decrypt them with per-member sender keys and ratchet those keys forward after each text message.
 - The group UI shows room metadata, member names, membership notices, and sender-attributed messages.
 - Group file transfer is not implemented yet.
 - Same-machine manual testing should use memory-only clients or separate identity paths so each terminal has a distinct cryptographic identity.
 
 Security scope:
 
-- The current sender-key layer prevents the group relay message body from carrying plaintext.
+- The current sender-key layer prevents the group relay message body from carrying plaintext and ratchets sender keys forward for ordered text messages.
 - The room host is still also a room participant and receives sender keys during member admission.
 - This is not an MLS implementation and does not yet provide MLS-style membership commits, post-compromise security, or robust epoch transitions.
 

@@ -3,7 +3,9 @@ package group
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -60,7 +62,9 @@ type Server struct {
 	local      Member
 	invite     string
 	senderKey  []byte
+	senderSeq  uint64
 	senderKeys map[string][]byte
+	senderSeqs map[string]uint64
 	epoch      uint64
 	members    map[string]*serverMember
 	events     chan Event
@@ -93,7 +97,9 @@ func NewServer(roomName, localName, localFingerprint string) (*Server, error) {
 		groupID:    groupID,
 		local:      local,
 		senderKey:  senderKey,
+		senderSeq:  0,
 		senderKeys: map[string][]byte{local.ID: cloneBytes(senderKey)},
+		senderSeqs: map[string]uint64{local.ID: 0},
 		epoch:      1,
 		members:    map[string]*serverMember{},
 		events:     make(chan Event, 64),
@@ -173,6 +179,7 @@ func (s *Server) AddMember(session *netpkg.SecureSession, name string, peer netp
 	}
 	s.members[member.ID] = wrapped
 	s.senderKeys[member.ID] = cloneBytes(senderKey)
+	s.senderSeqs[member.ID] = 0
 	s.epoch++
 	list := protocol.Message{
 		Type:    protocol.MessageTypeGroupMemberList,
@@ -203,9 +210,8 @@ func (s *Server) SendChat(text string) error {
 		Type:     protocol.MessageTypeGroupChat,
 		GroupID:  s.groupID,
 		SenderID: s.local.ID,
-		Epoch:    s.currentEpoch(),
 	}
-	if err := encryptGroupMessage(&msg, s.senderKey, messageID, text); err != nil {
+	if err := s.encryptLocalText(&msg, messageID, text); err != nil {
 		return err
 	}
 	s.broadcast(msg)
@@ -260,6 +266,7 @@ func (s *Server) readLoop(member *serverMember) {
 				Type:       protocol.MessageTypeGroupChat,
 				GroupID:    msg.GroupID,
 				SenderID:   msg.SenderID,
+				SenderSeq:  msg.SenderSeq,
 				MessageID:  msg.MessageID,
 				Ciphertext: cloneBytes(msg.Ciphertext),
 				Nonce:      cloneBytes(msg.Nonce),
@@ -305,6 +312,7 @@ func (s *Server) removeMember(member *serverMember) {
 	}
 	delete(s.members, member.member.ID)
 	delete(s.senderKeys, member.member.ID)
+	delete(s.senderSeqs, member.member.ID)
 	s.epoch++
 	_ = member.session.Close()
 	close(member.outbound)
@@ -364,6 +372,7 @@ func (s *Server) protocolMembersLocked() []protocol.GroupMember {
 			Fingerprint: member.Fingerprint,
 			Address:     member.Address,
 			SenderKey:   cloneBytes(s.senderKeys[member.ID]),
+			SenderSeq:   s.senderSeqs[member.ID],
 		})
 	}
 	return result
@@ -385,8 +394,38 @@ func (s *Server) emit(event Event) {
 func (s *Server) decryptText(message protocol.Message) (string, error) {
 	s.mu.Lock()
 	key := cloneBytes(s.senderKeys[message.SenderID])
+	expectedSeq := s.senderSeqs[message.SenderID]
 	s.mu.Unlock()
-	return decryptGroupMessage(message, key)
+	text, err := decryptGroupMessage(message, key, expectedSeq)
+	if err != nil {
+		return "", err
+	}
+	s.advanceSenderKey(message.SenderID, expectedSeq)
+	return text, nil
+}
+
+func (s *Server) encryptLocalText(message *protocol.Message, messageID, text string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	message.Epoch = s.epoch
+	if err := encryptGroupMessage(message, s.senderKey, s.senderSeq, messageID, text); err != nil {
+		return err
+	}
+	s.senderKey = ratchetSenderKey(s.senderKey)
+	s.senderSeq++
+	s.senderKeys[s.local.ID] = cloneBytes(s.senderKey)
+	s.senderSeqs[s.local.ID] = s.senderSeq
+	return nil
+}
+
+func (s *Server) advanceSenderKey(memberID string, sequence uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.senderSeqs[memberID] != sequence {
+		return
+	}
+	s.senderKeys[memberID] = ratchetSenderKey(s.senderKeys[memberID])
+	s.senderSeqs[memberID]++
 }
 
 type Client struct {
@@ -395,7 +434,9 @@ type Client struct {
 	groupID    string
 	local      Member
 	senderKey  []byte
+	senderSeq  uint64
 	senderKeys map[string][]byte
+	senderSeqs map[string]uint64
 	members    map[string]Member
 	session    *netpkg.SecureSession
 	events     chan Event
@@ -417,8 +458,10 @@ func NewClientWithMemberList(roomName, localName string, session *netpkg.SecureS
 		client.members[member.ID] = member
 	}
 	client.senderKeys = senderKeys
+	client.senderSeqs = senderSeqsFromProtocol(list.Members)
 	if senderKey := senderKeys[client.local.ID]; len(senderKey) > 0 {
 		client.senderKey = cloneBytes(senderKey)
+		client.senderSeq = client.senderSeqs[client.local.ID]
 	}
 	client.emit(Event{Type: EventMemberList, Members: members})
 	go client.readLoop()
@@ -440,7 +483,9 @@ func newClient(roomName, localName string, session *netpkg.SecureSession) *Clien
 		roomName:   roomName,
 		local:      local,
 		senderKey:  senderKey,
+		senderSeq:  0,
 		senderKeys: map[string][]byte{local.ID: cloneBytes(senderKey)},
+		senderSeqs: map[string]uint64{local.ID: 0},
 		members:    map[string]Member{local.ID: local},
 		session:    session,
 		events:     make(chan Event, 64),
@@ -493,7 +538,7 @@ func (c *Client) SendChat(text string) error {
 		GroupID:  c.GroupID(),
 		SenderID: c.local.ID,
 	}
-	if err := encryptGroupMessage(&msg, c.senderKey, messageID, text); err != nil {
+	if err := c.encryptLocalText(&msg, messageID, text); err != nil {
 		return err
 	}
 	if err := c.session.SendMessage(msg); err != nil {
@@ -534,8 +579,10 @@ func (c *Client) readLoop() {
 				c.members[member.ID] = member
 			}
 			c.senderKeys = senderKeysFromProtocol(msg.Members)
+			c.senderSeqs = senderSeqsFromProtocol(msg.Members)
 			if senderKey := c.senderKeys[c.local.ID]; len(senderKey) > 0 {
 				c.senderKey = cloneBytes(senderKey)
+				c.senderSeq = c.senderSeqs[c.local.ID]
 			}
 			c.mu.Unlock()
 			c.emit(Event{Type: EventMemberList, Members: members})
@@ -549,6 +596,7 @@ func (c *Client) readLoop() {
 			c.mu.Lock()
 			c.members[member.ID] = member
 			c.senderKeys[member.ID] = cloneBytes(msg.SenderKey)
+			c.senderSeqs[member.ID] = msg.SenderSeq
 			members := c.membersLocked()
 			c.mu.Unlock()
 			c.emit(Event{Type: EventMemberJoined, Member: member, Members: members})
@@ -557,6 +605,7 @@ func (c *Client) readLoop() {
 			member := c.members[msg.MemberID]
 			delete(c.members, msg.MemberID)
 			delete(c.senderKeys, msg.MemberID)
+			delete(c.senderSeqs, msg.MemberID)
 			members := c.membersLocked()
 			c.mu.Unlock()
 			c.emit(Event{Type: EventMemberLeft, Member: member, Members: members})
@@ -606,8 +655,37 @@ func (c *Client) SenderKey() []byte {
 func (c *Client) decryptText(message protocol.Message) (string, error) {
 	c.mu.Lock()
 	key := cloneBytes(c.senderKeys[message.SenderID])
+	expectedSeq := c.senderSeqs[message.SenderID]
 	c.mu.Unlock()
-	return decryptGroupMessage(message, key)
+	text, err := decryptGroupMessage(message, key, expectedSeq)
+	if err != nil {
+		return "", err
+	}
+	c.advanceSenderKey(message.SenderID, expectedSeq)
+	return text, nil
+}
+
+func (c *Client) encryptLocalText(message *protocol.Message, messageID, text string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := encryptGroupMessage(message, c.senderKey, c.senderSeq, messageID, text); err != nil {
+		return err
+	}
+	c.senderKey = ratchetSenderKey(c.senderKey)
+	c.senderSeq++
+	c.senderKeys[c.local.ID] = cloneBytes(c.senderKey)
+	c.senderSeqs[c.local.ID] = c.senderSeq
+	return nil
+}
+
+func (c *Client) advanceSenderKey(memberID string, sequence uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.senderSeqs[memberID] != sequence {
+		return
+	}
+	c.senderKeys[memberID] = ratchetSenderKey(c.senderKeys[memberID])
+	c.senderSeqs[memberID]++
 }
 
 func senderKeysFromProtocol(members []protocol.GroupMember) map[string][]byte {
@@ -616,6 +694,14 @@ func senderKeysFromProtocol(members []protocol.GroupMember) map[string][]byte {
 		if len(member.SenderKey) > 0 {
 			result[member.ID] = cloneBytes(member.SenderKey)
 		}
+	}
+	return result
+}
+
+func senderSeqsFromProtocol(members []protocol.GroupMember) map[string]uint64 {
+	result := make(map[string]uint64, len(members))
+	for _, member := range members {
+		result[member.ID] = member.SenderSeq
 	}
 	return result
 }
@@ -664,7 +750,7 @@ func validateSenderKey(key []byte) error {
 	return nil
 }
 
-func encryptGroupMessage(message *protocol.Message, key []byte, messageID, text string) error {
+func encryptGroupMessage(message *protocol.Message, key []byte, sequence uint64, messageID, text string) error {
 	if err := validateSenderKey(key); err != nil {
 		return err
 	}
@@ -689,15 +775,19 @@ func encryptGroupMessage(message *protocol.Message, key []byte, messageID, text 
 	}
 
 	message.MessageID = messageID
+	message.SenderSeq = sequence
 	message.Nonce = nonce
 	message.Ciphertext = aead.Seal(nil, nonce, []byte(text), groupMessageAAD(*message))
 	message.Text = ""
 	return nil
 }
 
-func decryptGroupMessage(message protocol.Message, key []byte) (string, error) {
+func decryptGroupMessage(message protocol.Message, key []byte, expectedSeq uint64) (string, error) {
 	if err := validateSenderKey(key); err != nil {
 		return "", err
+	}
+	if message.SenderSeq != expectedSeq {
+		return "", fmt.Errorf("unexpected sender sequence %d; expected %d", message.SenderSeq, expectedSeq)
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -718,7 +808,13 @@ func decryptGroupMessage(message protocol.Message, key []byte) (string, error) {
 }
 
 func groupMessageAAD(message protocol.Message) []byte {
-	return []byte(message.GroupID + "\x00" + message.SenderID + "\x00" + message.MessageID)
+	return []byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d", message.GroupID, message.SenderID, message.MessageID, message.SenderSeq))
+}
+
+func ratchetSenderKey(key []byte) []byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("github.com/JonathanInTheClouds/go-chat/group-sender-key/v1"))
+	return mac.Sum(nil)
 }
 
 func cloneBytes(value []byte) []byte {

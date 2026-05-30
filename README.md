@@ -244,7 +244,7 @@ Note: `/send` is available in 1:1 chat only. Group rooms currently support text 
 
 ## Group Encryption Model
 
-Group room transport still uses Noise XX for every member connection. On top of that, group text messages are encrypted as sender-key payloads before the host relay forwards them.
+Group room transport still uses Noise XX for every member connection. On top of that, group text messages are encrypted as sender-key payloads before the host relay forwards them. Sender keys ratchet forward after each text message, and group chat frames include a sender sequence number so receivers advance the matching key in order.
 
 Current limits:
 
