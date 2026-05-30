@@ -42,6 +42,7 @@ type Event struct {
 type Transport interface {
 	RoomName() string
 	GroupID() string
+	InviteAddress() string
 	LocalMember() Member
 	Members() []Member
 	Events() <-chan Event
@@ -55,6 +56,7 @@ type Server struct {
 	roomName string
 	groupID  string
 	local    Member
+	invite   string
 	epoch    uint64
 	members  map[string]*serverMember
 	events   chan Event
@@ -94,6 +96,18 @@ func (s *Server) RoomName() string {
 
 func (s *Server) GroupID() string {
 	return s.groupID
+}
+
+func (s *Server) InviteAddress() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.invite
+}
+
+func (s *Server) SetInviteAddress(address string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.invite = address
 }
 
 func (s *Server) LocalMember() Member {
@@ -385,6 +399,10 @@ func (c *Client) GroupID() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.groupID
+}
+
+func (c *Client) InviteAddress() string {
+	return ""
 }
 
 func (c *Client) LocalMember() Member {

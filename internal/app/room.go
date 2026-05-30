@@ -103,10 +103,11 @@ func runRoomServe(stdin io.Reader, stdout io.Writer, roomName, listen, identityP
 	}
 	defer listener.Close()
 
+	var publicAddr string
 	if tunnel {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		publicAddr, err := startRoomTunnel(ctx, listen)
+		publicAddr, err = startRoomTunnel(ctx, listen)
 		if err != nil {
 			return err
 		}
@@ -118,6 +119,9 @@ func runRoomServe(stdin io.Reader, stdout io.Writer, roomName, listen, identityP
 	room, err := grouppkg.NewServer(roomName, localName, identity.Fingerprint())
 	if err != nil {
 		return err
+	}
+	if publicAddr != "" {
+		room.SetInviteAddress(publicAddr)
 	}
 	defer room.Close()
 

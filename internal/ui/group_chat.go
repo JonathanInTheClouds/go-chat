@@ -58,13 +58,9 @@ func RunGroupChat(stdin io.Reader, stdout io.Writer, room grouppkg.Transport) er
 		room:     room,
 		input:    ti,
 		viewport: vp,
-		banners: []banner{
-			{body: SecureSessionReady},
-			{body: "Group text chat is active. File transfer is not available in rooms yet."},
-			{body: "Press Esc, Ctrl+C, or /quit to exit."},
-		},
-		members: members,
-		typing:  map[string]time.Time{},
+		banners:  initialGroupBanners(room),
+		members:  members,
+		typing:   map[string]time.Time{},
 	}
 
 	program := tea.NewProgram(
@@ -432,4 +428,16 @@ func sendGroupTypingCmd(room grouppkg.Transport) tea.Cmd {
 		_ = room.SendTyping()
 		return nil
 	}
+}
+
+func initialGroupBanners(room grouppkg.Transport) []banner {
+	banners := []banner{{body: SecureSessionReady}}
+	if room.InviteAddress() != "" {
+		banners = append(banners, banner{body: fmt.Sprintf("Invite: chat room join -n <name> -u %s %s", room.InviteAddress(), room.RoomName())})
+	}
+	banners = append(banners,
+		banner{body: "Group text chat is active. File transfer is not available in rooms yet."},
+		banner{body: "Press Esc, Ctrl+C, or /quit to exit."},
+	)
+	return banners
 }

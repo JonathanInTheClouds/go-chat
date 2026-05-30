@@ -158,6 +158,18 @@ share with your friend:
   chat connect -n <name> -u bore.pub:12345
 ```
 
+Group rooms also support tunnels. The room UI shows the invite command after startup:
+
+```bash
+chat room serve lab -n Alice -u --tunnel
+```
+
+Share the displayed invite command:
+
+```bash
+chat room join -n <name> -u bore.pub:12345 lab
+```
+
 ### Memory-only mode (no identity or trust saved to disk)
 
 Use this when you want a session that leaves no trace. Nothing is written to disk and file transfer is disabled.
