@@ -26,6 +26,8 @@ func Usage() string {
 Usage:
   chat serve [--listen host:port] [--name name] [--tunnel] [--ephemeral] [--identity path] [--known-peers path] [--peer label] [--allow-untrusted] [--memory-only]
   chat connect [--name name] [--ephemeral] [--identity path] [--known-peers path] [--peer label] [--allow-untrusted] [--memory-only] host:port
+  chat room serve <room-name> [--listen host:port] [--name name] [--tunnel] [--identity path] [--known-peers path] [--allow-untrusted] [--memory-only]
+  chat room join <host:port> <room-name> [--name name] [--identity path] [--known-peers path] [--peer label] [--allow-untrusted] [--memory-only]
   chat genkey [--identity path] [--force]
   chat genkey --ephemeral
   chat fingerprint [--ephemeral] [--identity path]

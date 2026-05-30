@@ -4,7 +4,7 @@ This document describes the current implementation state of the encrypted termin
 
 ## Project Summary
 
-The application is a terminal-native encrypted 1:1 chat tool written in Go.
+The application is a terminal-native encrypted chat tool written in Go. Its original flow is 1:1 chat, and it now has an initial host-relayed group room mode for live text chat with more than two people.
 
 Current foundations:
 
@@ -18,6 +18,7 @@ Current foundations:
 - Persistent or ephemeral identity modes
 - Persistent trust store or strict memory-only runtime mode
 - Encrypted in-band file transfer in normal mode
+- Host-relayed group rooms for live text chat
 
 ## Major Features Implemented
 
@@ -74,6 +75,15 @@ Current foundations:
   - the client exits cleanly
   - the server returns to `waiting for peer...`
 - This fixes the earlier one-session-only server behavior.
+
+### Group Rooms
+
+- `chat room serve <room-name>` starts a room host.
+- `chat room join <host:port> <room-name>` joins an existing room.
+- Each room member connects to the host with the existing Noise XX encrypted session and identity verification flow.
+- The host admits trusted peers, maintains the member list, and relays group text messages to all other connected members.
+- The group UI shows room metadata, member names, membership notices, and sender-attributed messages.
+- Group file transfer is not implemented yet.
 
 ### File Transfer
 
@@ -146,6 +156,8 @@ Scope:
 
 - `chat serve [--listen host:port] [--peer label] [--allow-untrusted] [--memory-only]`
 - `chat connect [--peer label] [--allow-untrusted] [--memory-only] host:port`
+- `chat room serve <room-name> [--listen host:port] [--allow-untrusted] [--memory-only]`
+- `chat room join <host:port> <room-name> [--peer label] [--allow-untrusted] [--memory-only]`
 
 ### Identity Commands
 
@@ -239,4 +251,3 @@ Main implementation areas:
 - `c203384` Keep server listening across sessions
 - `b5a6bc2` Enforce peer trust failures
 - `ae35141` Add explicit session admission rejection
-

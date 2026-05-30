@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	cryptopkg "github.com/JonathanInTheClouds/go-chat/internal/crypto"
@@ -75,6 +76,10 @@ func (l *SessionListener) Close() error {
 	return l.listener.Close()
 }
 
+func (l *SessionListener) Addr() stdnet.Addr {
+	return l.listener.Addr()
+}
+
 func (l *SessionListener) Accept(identity *cryptopkg.Identity, status io.Writer) (*SecureSession, PeerIdentity, error) {
 	if _, err := fmt.Fprintln(status, "waiting for peer..."); err != nil {
 		return nil, PeerIdentity{}, err
@@ -107,6 +112,7 @@ type PeerIdentity struct {
 
 type SecureSession struct {
 	conn    stdnet.Conn
+	sendMu  sync.Mutex
 	send    *noise.CipherState
 	receive *noise.CipherState
 	local   *cryptopkg.Identity
@@ -134,33 +140,33 @@ func (s *SecureSession) Send(message string) error {
 }
 
 func (s *SecureSession) SendChat(message string) error {
-	return s.sendProtocolMessage(protocol.Message{
+	return s.SendMessage(protocol.Message{
 		Type: protocol.MessageTypeChat,
 		Text: message,
 	})
 }
 
 func (s *SecureSession) SendName(name string) error {
-	return s.sendProtocolMessage(protocol.Message{
+	return s.SendMessage(protocol.Message{
 		Type: protocol.MessageTypeHandshakeName,
 		Text: name,
 	})
 }
 
 func (s *SecureSession) SendTyping() error {
-	return s.sendProtocolMessage(protocol.Message{
+	return s.SendMessage(protocol.Message{
 		Type: protocol.MessageTypeTyping,
 	})
 }
 
 func (s *SecureSession) SendSessionAccept() error {
-	return s.sendProtocolMessage(protocol.Message{
+	return s.SendMessage(protocol.Message{
 		Type: protocol.MessageTypeSessionAccept,
 	})
 }
 
 func (s *SecureSession) SendSessionReject(reason string) error {
-	return s.sendProtocolMessage(protocol.Message{
+	return s.SendMessage(protocol.Message{
 		Type: protocol.MessageTypeSessionReject,
 		Text: reason,
 	})
@@ -188,7 +194,7 @@ func (s *SecureSession) SendFile(path string) (string, string, int64, error) {
 
 	name := filepath.Base(path)
 	size := info.Size()
-	if err := s.sendProtocolMessage(protocol.Message{
+	if err := s.SendMessage(protocol.Message{
 		Type:   protocol.MessageTypeFileStart,
 		FileID: fileID,
 		Name:   name,
@@ -203,7 +209,7 @@ func (s *SecureSession) SendFile(path string) (string, string, int64, error) {
 		n, readErr := file.Read(buffer)
 		if n > 0 {
 			chunk := append([]byte(nil), buffer[:n]...)
-			if err := s.sendProtocolMessage(protocol.Message{
+			if err := s.SendMessage(protocol.Message{
 				Type:   protocol.MessageTypeFileChunk,
 				FileID: fileID,
 				Index:  index,
@@ -221,7 +227,7 @@ func (s *SecureSession) SendFile(path string) (string, string, int64, error) {
 		}
 	}
 
-	if err := s.sendProtocolMessage(protocol.Message{
+	if err := s.SendMessage(protocol.Message{
 		Type:   protocol.MessageTypeFileComplete,
 		FileID: fileID,
 	}); err != nil {
@@ -309,7 +315,10 @@ func (s *SecureSession) SaveIncomingFile(fileID, name string, expectedSize int64
 	}
 }
 
-func (s *SecureSession) sendProtocolMessage(message protocol.Message) error {
+func (s *SecureSession) SendMessage(message protocol.Message) error {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+
 	payload, err := protocol.EncodeMessage(message)
 	if err != nil {
 		return err

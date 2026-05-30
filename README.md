@@ -1,6 +1,6 @@
 # chat
 
-A terminal-native encrypted 1:1 chat tool written in Go.
+A terminal-native encrypted chat tool written in Go.
 
 ## Features
 
@@ -10,6 +10,7 @@ A terminal-native encrypted 1:1 chat tool written in Go.
 - **Fingerprint confirmation prompt** — verify peer identity out-of-band before connecting
 - **Passphrase-protected identity** — keys at rest are encrypted with argon2id + AES-256-GCM
 - **Explicit session admission** — both sides must accept before entering the chat UI
+- **Small group rooms** — host-relayed text rooms with multiple encrypted peer sessions
 - **Encrypted file transfer** in-band over the established session
 - **Memory-only mode** — ephemeral identity, no disk state, no file transfer
 - **Panic wipe** (`Ctrl+W`) — destroys identity, trust files, and received directory and exits immediately
@@ -119,6 +120,25 @@ chat serve -n Alice -u
 chat connect -n Bob -u localhost:7777
 ```
 
+### Local group room testing (three terminals, same machine)
+
+**Terminal 1:**
+```bash
+chat room serve lab -n Alice -u
+```
+
+**Terminal 2:**
+```bash
+chat room join localhost:7777 lab -n Bob -u
+```
+
+**Terminal 3:**
+```bash
+chat room join localhost:7777 lab -n Carol -u
+```
+
+Group rooms currently support live text chat. Each room member still connects over an individually encrypted Noise session, and the host relays messages to the other members.
+
 ### Connect over the internet via tunnel
 
 No port forwarding required. The host gets a public address via [bore.pub](https://bore.pub):
@@ -155,6 +175,9 @@ chat connect -n Bob -m -u 192.168.1.10:7777
 ```
 chat serve [-n name] [-p peer] [-u] [-m] [--listen host:port] [--tunnel]
 chat connect [-n name] [-p peer] [-u] [-m] host:port
+
+chat room serve <room-name> [-n name] [-u] [-m] [--listen host:port] [--tunnel]
+chat room join <host:port> <room-name> [-n name] [-p host-label] [-u] [-m]
 
 chat genkey [--ephemeral] [--force]
 chat fingerprint [--ephemeral]
@@ -202,6 +225,8 @@ These are hidden from `--help` but work on any command that reads from disk:
 | `Esc` / `Ctrl+C` | End the session and exit |
 | `Ctrl+W` | **Panic wipe** — securely wipe identity, trust store, and received/ then exit |
 | `PgUp` / `PgDn` | Scroll the message transcript |
+
+Note: `/send` is available in 1:1 chat only. Group rooms currently support text chat, membership notices, and typing indicators.
 
 ## Identity and Trust
 

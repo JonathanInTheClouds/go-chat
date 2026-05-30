@@ -16,8 +16,8 @@ import (
 	cryptopkg "github.com/JonathanInTheClouds/go-chat/internal/crypto"
 	netpkg "github.com/JonathanInTheClouds/go-chat/internal/net"
 	"github.com/JonathanInTheClouds/go-chat/internal/protocol"
-	tunnelpkg "github.com/JonathanInTheClouds/go-chat/internal/tunnel"
 	"github.com/JonathanInTheClouds/go-chat/internal/trust"
+	tunnelpkg "github.com/JonathanInTheClouds/go-chat/internal/tunnel"
 	"github.com/JonathanInTheClouds/go-chat/internal/ui"
 
 	"github.com/spf13/cobra"
@@ -76,6 +76,7 @@ func buildRoot(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	root.AddCommand(
 		newServeCmd(stdin, stdout, g),
 		newConnectCmd(stdin, stdout, g),
+		newRoomCmd(stdin, stdout, g),
 		newGenKeyCmd(stdout, g),
 		newFingerprintCmd(stdout, g),
 		newWipeCmd(stdout, g),
