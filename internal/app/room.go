@@ -13,6 +13,7 @@ import (
 	grouppkg "github.com/JonathanInTheClouds/go-chat/internal/group"
 	netpkg "github.com/JonathanInTheClouds/go-chat/internal/net"
 	"github.com/JonathanInTheClouds/go-chat/internal/protocol"
+	"github.com/JonathanInTheClouds/go-chat/internal/trust"
 	tunnelpkg "github.com/JonathanInTheClouds/go-chat/internal/tunnel"
 	"github.com/JonathanInTheClouds/go-chat/internal/ui"
 
@@ -192,7 +193,7 @@ func acceptRoomMembers(listener *netpkg.SessionListener, identity *cryptopkg.Ide
 	ipLastSeen := make(map[string]time.Time)
 
 	for {
-		conn, peer, err := listener.Accept(identity, stdout)
+		conn, peer, err := listener.Accept(identity, io.Discard)
 		if err != nil {
 			return
 		}
@@ -206,7 +207,6 @@ func acceptRoomMembers(listener *netpkg.SessionListener, identity *cryptopkg.Ide
 		remoteIP, _, splitErr := net.SplitHostPort(conn.RemoteAddress())
 		if splitErr == nil {
 			if now.Sub(ipLastSeen[remoteIP]) < rateLimitWindow {
-				_, _ = fmt.Fprintf(stdout, "rate-limited connection from %s; dropping\n", remoteIP)
 				_ = conn.Close()
 				continue
 			}
@@ -224,7 +224,7 @@ func acceptRoomMembers(listener *netpkg.SessionListener, identity *cryptopkg.Ide
 			fallbackLabel = conn.RemoteAddress()
 		}
 
-		trustErr := reportPeerTrust(stdin, stdout, runtime, "", fallbackLabel, peer.Fingerprint, allowUntrusted)
+		trustErr := checkRoomPeerTrust(runtime, fallbackLabel, peer.Fingerprint, allowUntrusted)
 		if err := coordinateSessionAdmission(conn, false, trustErr); err != nil {
 			_ = conn.Close()
 			continue
@@ -246,6 +246,40 @@ func acceptRoomMembers(listener *netpkg.SessionListener, identity *cryptopkg.Ide
 		if err := room.AddMember(conn, peerName, peer); err != nil {
 			_ = conn.Close()
 		}
+	}
+}
+
+func checkRoomPeerTrust(runtime runtimeConfig, fallbackLabel, fingerprint string, allowUntrusted bool) error {
+	if runtime.MemoryOnly {
+		return nil
+	}
+
+	store, err := openTrustStore(runtime.KnownPeersPath)
+	if err != nil {
+		return err
+	}
+
+	observation, err := store.Check(fallbackLabel, fingerprint)
+	if err != nil {
+		return err
+	}
+
+	switch observation.Status {
+	case trust.StatusNew:
+		if !allowUntrusted {
+			return &trustBlockedError{reason: fmt.Sprintf("untrusted peer %s", observation.Label)}
+		}
+		return store.Set(observation.Label, observation.Observed, time.Now())
+	case trust.StatusMatch:
+		_, err := store.Observe(observation.Label, observation.Observed, time.Now())
+		return err
+	case trust.StatusMismatch:
+		if !allowUntrusted {
+			return &trustBlockedError{reason: fmt.Sprintf("peer fingerprint changed for %s", observation.Label)}
+		}
+		return store.Set(observation.Label, observation.Observed, time.Now())
+	default:
+		return fmt.Errorf("unknown trust observation status: %d", observation.Status)
 	}
 }
 
