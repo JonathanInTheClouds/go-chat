@@ -243,14 +243,17 @@ func (m *groupChatModel) View() string {
 
 func (m *groupChatModel) renderHeader(width int) string {
 	title := headerTitleStyle.Render("Encrypted Group Chat")
+	lines := []string{
+		fmt.Sprintf("room  %s", m.room.RoomName()),
+		fmt.Sprintf("id    %s", m.groupIDLabel()),
+		fmt.Sprintf("local %s", m.room.LocalMember().Fingerprint),
+		fmt.Sprintf("members %s", strings.Join(m.memberNames(), ", ")),
+	}
+	if m.room.InviteAddress() != "" {
+		lines = append(lines, fmt.Sprintf("invite chat room join -n <name> -u %s %s", m.room.InviteAddress(), m.room.RoomName()))
+	}
 	meta := headerMetaStyle.Render(
-		fmt.Sprintf(
-			"room  %s\nid    %s\nlocal %s\nmembers %s",
-			m.room.RoomName(),
-			m.groupIDLabel(),
-			m.room.LocalMember().Fingerprint,
-			strings.Join(m.memberNames(), ", "),
-		),
+		strings.Join(lines, "\n"),
 	)
 	return panelStyle.Width(width).Render(lipgloss.JoinVertical(lipgloss.Left, title, meta))
 }
@@ -432,9 +435,6 @@ func sendGroupTypingCmd(room grouppkg.Transport) tea.Cmd {
 
 func initialGroupBanners(room grouppkg.Transport) []banner {
 	banners := []banner{{body: SecureSessionReady}}
-	if room.InviteAddress() != "" {
-		banners = append(banners, banner{body: fmt.Sprintf("Invite: chat room join -n <name> -u %s %s", room.InviteAddress(), room.RoomName())})
-	}
 	banners = append(banners,
 		banner{body: "Group text chat is active. File transfer is not available in rooms yet."},
 		banner{body: "Press Esc, Ctrl+C, or /quit to exit."},
