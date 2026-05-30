@@ -228,7 +228,7 @@ func (s *Server) readLoop(member *serverMember) {
 	for {
 		msg, err := member.session.ReceiveMessage()
 		if err != nil {
-			s.removeMember(member.member.ID)
+			s.removeMember(member)
 			return
 		}
 		switch msg.Type {
@@ -269,30 +269,30 @@ func (s *Server) readLoop(member *serverMember) {
 func (s *Server) writeLoop(member *serverMember) {
 	for msg := range member.outbound {
 		if err := member.session.SendMessage(msg); err != nil {
-			s.removeMember(member.member.ID)
+			s.removeMember(member)
 			return
 		}
 	}
 }
 
-func (s *Server) removeMember(memberID string) {
+func (s *Server) removeMember(member *serverMember) {
 	s.mu.Lock()
-	member, ok := s.members[memberID]
-	if !ok {
+	current, ok := s.members[member.member.ID]
+	if !ok || current != member {
 		s.mu.Unlock()
 		return
 	}
-	delete(s.members, memberID)
+	delete(s.members, member.member.ID)
 	s.epoch++
 	_ = member.session.Close()
 	close(member.outbound)
 	left := protocol.Message{
 		Type:     protocol.MessageTypeGroupMemberLeft,
 		GroupID:  s.groupID,
-		MemberID: memberID,
+		MemberID: member.member.ID,
 		Epoch:    s.epoch,
 	}
-	s.broadcastExceptLocked(left, memberID)
+	s.broadcastExceptLocked(left, member.member.ID)
 	members := s.membersLocked()
 	s.mu.Unlock()
 	s.emit(Event{Type: EventMemberLeft, Member: member.member, Members: members})

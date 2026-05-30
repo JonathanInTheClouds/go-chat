@@ -85,6 +85,55 @@ func TestServerRelaysMessagesBetweenThreeMembers(t *testing.T) {
 	}
 }
 
+func TestReplacingSameMemberDoesNotRemoveNewConnection(t *testing.T) {
+	hostIdentity := mustIdentity(t)
+	sharedIdentity := mustIdentity(t)
+
+	listener, err := netpkg.Listen(netpkg.ListenerConfig{ListenAddress: "127.0.0.1:0"}, io.Discard)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	room, err := NewServer("lab", "Alice", hostIdentity.Fingerprint())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer room.Close()
+
+	acceptErr := make(chan error, 2)
+	go acceptNamedTestMember(listener, room, hostIdentity, "Bob", acceptErr)
+
+	firstSession, _, err := netpkg.Dial(netpkg.DialConfig{RemoteAddress: listener.Addr().String()}, sharedIdentity, io.Discard)
+	if err != nil {
+		t.Fatalf("dial first member: %v", err)
+	}
+	_ = clientFromInitialList(t, "lab", "Bob", firstSession)
+	if err := <-acceptErr; err != nil {
+		t.Fatalf("accept first member: %v", err)
+	}
+
+	go acceptNamedTestMember(listener, room, hostIdentity, "Carol", acceptErr)
+	secondSession, _, err := netpkg.Dial(netpkg.DialConfig{RemoteAddress: listener.Addr().String()}, sharedIdentity, io.Discard)
+	if err != nil {
+		t.Fatalf("dial replacement member: %v", err)
+	}
+	defer secondSession.Close()
+
+	replacementClient := clientFromInitialList(t, "lab", "Carol", secondSession)
+	if err := <-acceptErr; err != nil {
+		t.Fatalf("accept replacement member: %v", err)
+	}
+
+	if err := replacementClient.SendChat("still here"); err != nil {
+		t.Fatalf("replacement send: %v", err)
+	}
+	event := waitForGroupEvent(t, room.Events(), EventMessage)
+	if event.Member.Name != "Carol" || event.Text != "still here" {
+		t.Fatalf("server saw wrong replacement message: member=%q text=%q", event.Member.Name, event.Text)
+	}
+}
+
 func acceptTestMembers(t *testing.T, listener *netpkg.SessionListener, room *Server, hostIdentity *cryptopkg.Identity, namesByFingerprint map[string]string, result chan<- error) {
 	t.Helper()
 	for i := 0; i < len(namesByFingerprint); i++ {
@@ -105,6 +154,15 @@ func acceptTestMembers(t *testing.T, listener *netpkg.SessionListener, room *Ser
 		}
 	}
 	result <- nil
+}
+
+func acceptNamedTestMember(listener *netpkg.SessionListener, room *Server, hostIdentity *cryptopkg.Identity, name string, result chan<- error) {
+	session, peer, err := listener.Accept(hostIdentity, io.Discard)
+	if err != nil {
+		result <- err
+		return
+	}
+	result <- room.AddMember(session, name, peer)
 }
 
 func clientFromInitialList(t *testing.T, roomName, localName string, session *netpkg.SecureSession) *Client {
